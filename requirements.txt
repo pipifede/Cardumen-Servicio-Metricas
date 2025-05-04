@@ -1,0 +1,5 @@
+fastapi>=0.95.0       # API framework para el servicio receptor
+uvicorn[standard]>=0.22.0  # servidor ASGI de alto rendimiento
+pydantic>=2.11.0      # validación de datos y parsing automático de JSON
+requests>=2.32.2      # cliente HTTP para envío de datos REST
+websockets>=10.4      # cliente/servidor WebSocket
