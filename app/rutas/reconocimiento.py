@@ -12,6 +12,13 @@ from io import BytesIO
 import base64
 import glob
 import mimetypes
+from io import BytesIO
+import base64
+import glob
+import mimetypes
+import moviepy
+from time import time
+
 
 router = APIRouter()
 
@@ -19,6 +26,18 @@ def checkModeloYolo(modelo : str):
     if modelo in MODELOSYOLO:
         return True
     return False
+
+
+def convert_avi_to_mp4(avi_file_path):
+    if not os.path.exists(avi_file_path):
+        raise FileNotFoundError(avi_file_path)
+    t0 = time()
+    clip = moviepy.VideoFileClip(avi_file_path)
+    path, file_name = os.path.split(avi_file_path)
+    output_name = os.path.join(path, 'tmp_' + os.path.splitext(file_name)[0] + '.mp4')
+    clip.write_videofile(output_name)
+    return output_name
+    print('Finished conversion in %is' % (time() - t0))
 
 
 @router.post("/upload/video")
@@ -58,62 +77,60 @@ async def upload_video(request: Request, file: UploadFile = File(...), tecnologi
     output_path = Path(PROCESSED_DIR) / "videos" / uuid_str / "predict"
     output_files = list(output_path.glob("*"))
     output_file = output_files[0]
-    media_type, _ = mimetypes.guess_type(str(output_file))
+    file_path = convert_avi_to_mp4(output_file)
+    media_type, _ = mimetypes.guess_type(str(file_path))
     if media_type is None:
         media_type = "application/octet-stream"
     # Devolver el archivo procesado
-    if output_file.suffix in [".jpg", ".png"]:
-        return FileResponse(output_file, media_type=media_type)
+    file_size = os.path.getsize(file_path)
+    range_header = request.headers.get('range')
+
+    def iterfile(start=0, end=None):
+        with open(file_path, "rb") as f:
+            f.seek(start)
+            remaining = end - start + 1 if end is not None else os.path.getsize(file_path) - start
+
+            while remaining > 0:
+                chunk_size = min(1024 * 1024, remaining)
+                data = f.read(chunk_size)
+                if not data:
+                    break
+                yield data
+                remaining -= len(data)
+
+    if range_header:
+        # Parsear el encabezado 'Range'
+        range_value = range_header.strip().lower().replace("bytes=", "")
+        start_str, end_str = range_value.split("-")
+        start = int(start_str)
+        end = int(end_str) if end_str else file_size - 1
+
+        content_length = end - start + 1
+
+        return StreamingResponse(
+            iterfile(start, end),
+            status_code=206,
+            media_type="video/avi",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges",
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            }
+        )
     else:
-        file_size = os.path.getsize(output_file)
-        range_header = request.headers.get('range')
-
-        def iterfile(start=0, end=None):
-            with open(output_file, "rb") as f:
-                f.seek(start)
-                remaining = end - start + 1 if end is not None else os.path.getsize(output_file) - start
-
-                while remaining > 0:
-                    chunk_size = min(1024 * 1024, remaining)
-                    data = f.read(chunk_size)
-                    if not data:
-                        break
-                    yield data
-                    remaining -= len(data)
-
-        if range_header:
-            # Parsear el encabezado 'Range'
-            range_value = range_header.strip().lower().replace("bytes=", "")
-            start_str, end_str = range_value.split("-")
-            start = int(start_str)
-            end = int(end_str) if end_str else file_size - 1
-
-            content_length = end - start + 1
-
-            return StreamingResponse(
-                iterfile(start, end),
-                status_code=206,
-                media_type="video/avi",
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges",
-                    "Content-Range": f"bytes {start}-{end}/{file_size}",
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(content_length),
-                }
-            )
-        else:
-            return StreamingResponse(
-                iterfile(),
-                status_code=200,
-                media_type="video/avi",
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges",
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(file_size),
-                }
-            )
+        return StreamingResponse(
+            iterfile(),
+            status_code=200,
+            media_type="video/avi",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+            }
+        )
     """ return FileResponse(output_file, media_type=media_type, filename=f"{uuid_str}.avi") """
 
 @router.websocket("/ws/image")
