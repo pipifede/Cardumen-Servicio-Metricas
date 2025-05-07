@@ -1,0 +1,336 @@
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webcam Detection</title>
+</head>
+<body>
+    <h1>Detección de imágenes desde la webcam</h1>
+    <video id="webcam" autoplay playsinline width="640" height="480"></video>
+    <button id="capture">Capturar y Enviar</button>
+    <p id="status">Estado: Esperando captura...</p>
+    <h2>Imagen Procesada:</h2>
+    <img id="processed-image" alt="Imagen procesada" style="max-width: 100%; height: auto;">
+
+    <script>
+        const video = document.getElementById("webcam");
+        const captureButton = document.getElementById("capture");
+        const statusText = document.getElementById("status");
+        const processedImage = document.getElementById("processed-image");
+
+        // Acceder a la webcam
+        async function startWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+            } catch (error) {
+                console.error("Error al acceder a la webcam:", error);
+                statusText.textContent = "Error al acceder a la webcam.";
+            }
+        }
+        let isProcessing = false;
+        // Capturar un frame de la webcam y enviarlo al backend
+        captureButton.addEventListener("click", async () => {
+            // Crear un canvas para capturar el frame
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const context = canvas.getContext("2d");
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            while (true) {
+                if (!isProcessing) {
+                    isProcessing = true;
+
+                    // Capturar un frame de la webcam
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                    // Convertir el frame a un archivo Blob
+                    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg"));
+
+                    // Crear un FormData para enviar la imagen
+                    const formData = new FormData();
+                    formData.append("file", blob, "webcam.jpg");
+                    formData.append("tecnologia", "yolo");
+
+                    // Enviar la imagen al backend
+                    statusText.textContent = "Procesando...";
+                    try {
+                        const response = await fetch("http://127.0.0.1:8000/upload/image", {
+                            method: "POST",
+                            body: formData,
+                        });
+
+                        if (response.ok) {
+                            // Convertir la respuesta en un Blob para mostrar la imagen procesada
+                            const imageBlob = await response.blob();
+                            const imageUrl = URL.createObjectURL(imageBlob);
+                            processedImage.src = imageUrl; // Mostrar la imagen procesada
+                            statusText.textContent = "Procesado correctamente.";
+                        } else {
+                            const errorText = await response.text();
+                            statusText.textContent = "Error: " + errorText;
+                        }
+                    } catch (error) {
+                        console.error("Error al enviar la imagen:", error);
+                        statusText.textContent = "Error al enviar la imagen.";
+                    };
+
+                    isProcessing = false; // Permitir el siguiente frame
+                };
+
+                // Esperar un pequeño intervalo antes de procesar el siguiente frame
+                await new Promise((resolve) => setTimeout(resolve, 100)); // 100 ms = ~10 FPS
+            };
+        });
+
+        // Iniciar la webcam al cargar la página
+        startWebcam();
+    </script>
+</body>
+</html> -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Image Processing</title>
+</head>
+<body>
+    <h1>Procesamiento de imágenes en tiempo real</h1>
+    <button id="toggleWS">Conectar</button>
+    <select id="tecnologia">
+        <option value="">Selecciona una tecnologia</option>
+        <option value="Yolo">Yolo</option>
+        <option value="MediaPipe">MediaPipe</option>
+    </select>
+    <select id="modelo">
+        <option value="">Selecciona un modelo</option>
+    </select>
+    <video id="webcam" autoplay playsinline width="640" height="480"></video>
+    <canvas id="canvas" style="display: none;"></canvas>
+    <img id="processed-image" alt="Imagen procesada" style="max-width: 100%; height: auto;">
+    <p id="status">Estado: Desconectado</p>
+
+
+    <h2>Subir imagen o video</h2>
+    <input type="file" id="fileInput" accept="image/*,video/*">
+    <select id="tecnologia2">
+        <option value="">Selecciona una tecnologia</option>
+        <option value="Yolo">Yolo</option>
+        <option value="MediaPipe">MediaPipe</option>
+    </select>
+    <select id="modelo2">
+        <option value="">Selecciona un modelo</option>
+    </select>
+    <button id="uploadButton">Subir y procesar</button>
+    <video id="videoResult" controls style="display: none; max-width: 100%;"></video>
+    <img id="imageResult" alt="Resultado" style="display: none; max-width: 100%;">
+    
+    <button id="testButton">Test</button>
+    <script>
+        let ws = null; // Variable para el WebSocket
+        let isConnected = false; // Estado de conexión
+        let intervalId = null; // ID del intervalo para enviar frames
+
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("canvas");
+        const processedImage = document.getElementById("processed-image");
+        const statusText = document.getElementById("status");
+        const toggleWSButton = document.getElementById("toggleWS");
+
+        // Acceder a la webcam
+        async function startWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+            } catch (error) {
+                console.error("Error al acceder a la webcam:", error);
+                statusText.textContent = "Error al acceder a la webcam.";
+            }
+        }
+
+        // Conectar al WebSocket
+        function connectWebSocket() {
+            const tecnologia = document.getElementById('tecnologia').value ? `tecnologia=${document.getElementById('tecnologia').value}` : null; 
+            const modelo = document.getElementById('modelo').value ? `modelo=${document.getElementById('modelo').value}` : null; 
+            let url = `ws://127.0.0.1:8000/ws/image`;
+            if (tecnologia){
+                url = url + `?${tecnologia}`
+                if (modelo) url = url + `&${modelo}`
+            }else if (modelo){
+                url = url + `?${modelo}`
+            }
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                statusText.textContent = "Conectado al servidor WebSocket.";
+                toggleWSButton.textContent = "Desconectar";
+                isConnected = true;
+
+                // Enviar frames continuamente
+                intervalId = setInterval(sendFrame, 100); // Enviar un frame cada 100 ms (~10 FPS)
+            };
+
+            ws.onmessage = (event) => {
+                // Decodificar la imagen procesada y mostrarla
+                const imageUrl = "data:image/jpeg;base64," + event.data;
+                processedImage.src = imageUrl;
+            };
+
+            ws.onclose = () => {
+                statusText.textContent = "Desconectado del servidor WebSocket.";
+                toggleWSButton.textContent = "Conectar";
+                isConnected = false;
+
+                // Detener el envío de frames
+                clearInterval(intervalId);
+                intervalId = null;
+            };
+
+            ws.onerror = (error) => {
+                console.error("Error en WebSocket:", error);
+                statusText.textContent = "Error en WebSocket.";
+            };
+        }
+
+        // Desconectar del WebSocket
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws.readyState = null;
+            }
+        }
+
+        // Alternar conexión/desconexión
+        toggleWSButton.addEventListener("click", () => {
+            if (isConnected) {
+                disconnectWebSocket();
+            } else {
+                connectWebSocket();
+            }
+        });
+
+        // Capturar y enviar frames al servidor
+        function sendFrame() {
+            const context = canvas.getContext("2d");
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Convertir el frame a Base64
+            canvas.toBlob((blob) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const base64Data = reader.result.split(",")[1];
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(base64Data); // Enviar la imagen al servidor
+                    }
+                };
+                reader.readAsDataURL(blob);
+            }, "image/jpeg");
+        }
+
+        // Iniciar la webcam
+        startWebcam();
+        async function cargarModelos() {
+            try {
+                const response = await fetch('http://127.0.0.1:8000/modelos/yolo'); // Ajustá si cambia el host/puerto
+                const data = await response.json();
+
+                const modeloSelect = document.getElementById("modelo");
+                const modelo2Select = document.getElementById("modelo2");
+                modeloSelect.innerHTML = '<option value="">Selecciona un modelo</option>'; // Limpiar y poner opción por defecto
+                modelo2Select.innerHTML = '<option value="">Selecciona un modelo</option>'; // Limpiar y poner opción por defecto
+
+                data.modelos.forEach(modelo => {
+                    const option1 = document.createElement("option");
+                    option1.value = modelo;
+                    option1.textContent = modelo;
+                    modeloSelect.appendChild(option1);
+
+                    const option2 = document.createElement("option");
+                    option2.value = modelo;
+                    option2.textContent = modelo;
+                    modelo2Select.appendChild(option2);
+                });
+            } catch (error) {
+                console.error("Error al cargar modelos:", error);
+                statusText.textContent = "Error al cargar modelos disponibles.";
+            }
+        }
+
+        // Llamar al cargar la página
+        cargarModelos();
+        document.getElementById("uploadButton").addEventListener("click", async () => {
+            const fileInput = document.getElementById("fileInput");
+            const tecnologia = document.getElementById("tecnologia2").value;
+            const modelo = document.getElementById("modelo2").value;
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert("Selecciona un archivo primero.");
+                return;
+            }
+            const videoExtensions = [".mp4", ".webm", ".ogg", ".mov", ".mkv"];
+            const fileName = file.name.toLowerCase();
+            const isVideo = videoExtensions.some(ext => fileName.endsWith(ext));
+
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("tecnologia", tecnologia || "yolo");
+            formData.append("modelo", modelo || "yolo11n");
+
+            try {
+                const response = await fetch("http://127.0.0.1:8000/upload/video", {
+                    method: "POST",
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error("Error al procesar el archivo.");
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+
+                if (isVideo) {
+                    document.getElementById("videoResult").src = url;
+                    document.getElementById("videoResult").style.display = "block";
+                    document.getElementById("imageResult").style.display = "none";
+                } else {
+                    document.getElementById("imageResult").src = url;
+                    document.getElementById("imageResult").style.display = "block";
+                    document.getElementById("videoResult").style.display = "none";
+                }
+
+            } catch (error) {
+                console.error("Error en la carga:", error);
+                alert("Error al subir o procesar el archivo.");
+            }
+        });
+        document.getElementById("testButton").addEventListener("click", async () => {
+
+            try {
+                const response = await fetch("http://127.0.0.1:8000/video/test", {
+                    method: "GET"
+                });
+
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+
+                document.getElementById("videoResult").src = url;
+                document.getElementById("videoResult").style.display = "block";
+                document.getElementById("imageResult").style.display = "none";
+
+            } catch (error) {
+                console.error("Error en la carga:", error);
+                alert("Error al subir o procesar el archivo.");
+            }
+        });
+    </script>
+</body>
+</html>
