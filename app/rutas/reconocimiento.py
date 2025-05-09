@@ -137,13 +137,14 @@ async def websocket_image(websocket: WebSocket, tecnologia: str = "yolo", modelo
         model = MediaPipeObjectDetector(str(model_path))
 
     try:
+        timestamp_ms = 0
         while True:
             data = await websocket.receive_text()
             image_data = base64.b64decode(data)
             nparr = np.frombuffer(image_data, np.uint8)
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-            processed_image = model.process_image(image)
+            timestamp_ms += 1
+            processed_image = model.process_image(image, timestamp_ms)
 
             _, buffer = cv2.imencode('.jpg', processed_image)
             processed_image_base64 = base64.b64encode(buffer).decode('utf-8')

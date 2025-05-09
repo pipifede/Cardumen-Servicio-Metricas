@@ -18,7 +18,7 @@ class MediaPipeObjectDetector:
         )
         self.detector = ObjectDetector.create_from_options(options)
 
-    def process_image(self, image: np.ndarray, timestamp_ms: int):
+    def process_image(self, image: np.ndarray, timestamp_ms: int = 0):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
         result = self.detector.detect_for_video(mp_image, timestamp_ms)
         detections = result.detections
