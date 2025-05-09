@@ -28,7 +28,7 @@ opencv-python==4.11.0.86
 packaging==25.0
 pandas==2.2.3
 pillow==10.0
-protobuf==6.30.2
+protobuf==3.20.3
 psutil==7.0.0
 py-cpuinfo==9.0.0
 pyaml==25.1.0
@@ -56,3 +56,4 @@ urllib3==2.4.0
 websockets==11.0.3
 moviepy==2.1.2
 python-multipart==0.0.20
+mediapipe==0.10.9
