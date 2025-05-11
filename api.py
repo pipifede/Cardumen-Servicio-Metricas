@@ -83,7 +83,7 @@ async def progress_websocket(websocket: WebSocket, task_id: str):
         if task_id in active_connections:
             del active_connections[task_id]
 
-'''@app.post("/upload/")
+@app.post("/upload/")
 async def upload_video(file: UploadFile = File(...), tecnologia: str = Form(...)):
     if not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
         return {"error": "Formato de video no soportado"}
@@ -97,7 +97,7 @@ async def upload_video(file: UploadFile = File(...), tecnologia: str = Form(...)
     # Iniciar procesamiento en segundo plano
     asyncio.create_task(process_video_real_time(str(input_path), task_id))
     
-    return {"status": "processing", "task_id": task_id}'''
+    return {"status": "processing", "task_id": task_id}
 
 @app.get("/video/{filename}")
 async def get_video(filename: str):

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, File, UploadFile, WebSocket, WebSocketDisconnect, Request, Form 
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pathlib import Path
 from app.tecnologias.yolo import YOLOModel
 from app.tecnologias.mediaPipe import MediaPipeObjectDetector
@@ -18,7 +18,6 @@ import json
 
 router = APIRouter()
 
-# Diccionario para mantener las conexiones WebSocket activas
 active_connections = {}
 
 def checkModelo(modelo: str, tecnologia: str):
@@ -40,6 +39,10 @@ def convert_avi_to_mp4(avi_file_path):
 async def process_and_stream_video(file_path: str, output_path: str, tecnologia: str, modelo: str, task_id: str):
     """Procesa el video y envía updates por WebSocket"""
     try:
+        # Convertir paths a objetos Path
+        file_path = Path(file_path)
+        output_path = Path(output_path)
+        
         if tecnologia == "yolo":
             model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
             model.process_video(str(file_path), str(output_path))
@@ -73,46 +76,69 @@ async def process_and_stream_video(file_path: str, output_path: str, tecnologia:
         raise
 
 @router.post("/upload/video")
-async def upload_video(
-    request: Request, 
-    file: UploadFile = File(...), 
-    tecnologia: str = Form("yolo"), 
-    modelo: str = Form(MODELOSYOLO[0])
-):
-    print(f"\n✅ Procesando video con {tecnologia} - Modelo: {modelo}")
-    
+async def upload_video(request: Request, file: UploadFile = File(...), tecnologia: str = Form("yolo"), modelo: str = Form(MODELOSYOLO[0])):
+    print("\n\n✅ TECNOLOGÍA RECIBIDA:", tecnologia)
+    print("\n\n✅ MODELO RECIBIDO:", modelo)
     if tecnologia not in ["yolo", "mediapipe"]:
-        return JSONResponse({"error": f"Tecnología no soportada: {tecnologia}"}, status_code=400)
+        return {"error": f"Tecnología no soportada: {tecnologia}"}
 
     if not checkModelo(modelo, tecnologia):
-        return JSONResponse(
-            {"error": f"Modelo '{modelo}' no válido para {tecnologia}"}, 
-            status_code=400
-        )
+        return {"error": f"Modelo '{modelo}' no es válido para la tecnología '{tecnologia}'"}
 
-    if not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
-        return JSONResponse({"error": "Formato de video no soportado"}, status_code=400)
+    if not file.filename.endswith(('.mp4', '.avi', '.mov')):
+        return {"error": "Tipo de archivo no soportado"}
 
-    task_id = str(uuid.uuid4())
-    input_path = Path(UPLOAD_DIR) / "videos" / f"{task_id}{Path(file.filename).suffix}"
+    uuid_str = str(uuid.uuid4())
+    input_path = Path(UPLOAD_DIR) / "videos" / f"{uuid_str}{Path(file.filename).suffix}"
     input_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    output_path = Path(PROCESSED_DIR) / "videos" / task_id
+    output_path = Path(PROCESSED_DIR) / "videos" / uuid_str
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Iniciar procesamiento en segundo plano
-    asyncio.create_task(process_and_stream_video(
-        input_path, output_path, tecnologia, modelo, task_id
-    ))
+    if tecnologia == "yolo":
+        model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
+        model.process_video(str(input_path), str(output_path))
+        avi_output_dir = output_path / "predict"
+        output_files = list(avi_output_dir.glob("*.avi"))
+        if not output_files:
+            return {"error": "No se encontró archivo de salida"}
+        avi_file = output_files[0]
+    elif tecnologia == "mediapipe":
+        model_path = Path(MEDIAPIPE_MODEL_PATH) / modelo
+        model = MediaPipeObjectDetector(str(model_path))
+        avi_file = model.process_video(str(input_path), str(output_path))
 
-    return JSONResponse({
-        "status": "processing", 
-        "task_id": task_id,
-        "message": "El video está siendo procesado"
-    })
+    file_path = convert_avi_to_mp4(str(avi_file))
+    
+    # Enviar el video procesado directamente en la respuesta
+    def iterfile():
+        with open(file_path, "rb") as f:
+            while chunk := f.read(1024 * 1024):  # Leer en chunks de 1MB
+                yield chunk
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": f"attachment; filename=processed_{file.filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+@router.get("/video/{filename}")
+async def get_processed_video(filename: str):
+    video_path = Path(PROCESSED_DIR) / "videos" / filename
+    if not video_path.exists():
+        return JSONResponse({"error": "Video no encontrado"}, status_code=404)
+    
+    return FileResponse(
+        video_path,
+        media_type="video/mp4",
+        headers={"Content-Disposition": f"inline; filename={filename}"}
+    )
 
 @router.websocket("/ws/progress/{task_id}")
 async def progress_websocket(websocket: WebSocket, task_id: str):
@@ -121,22 +147,19 @@ async def progress_websocket(websocket: WebSocket, task_id: str):
     
     try:
         while True:
-            # Mantener la conexión activa
             await websocket.receive_text()
     except WebSocketDisconnect:
-        print(f"WebSocket desconectado para task_id: {task_id}")
+        print(f"WebSocket desconectado: {task_id}")
     finally:
         if task_id in active_connections:
             del active_connections[task_id]
 
 @router.websocket("/ws/image")
 async def websocket_image(websocket: WebSocket, tecnologia: str = "yolo", modelo: str = MODELOSYOLO[0]):
-    tecnologia = tecnologia.lower()
     await websocket.accept()
-    print(f"[WebSocket] Cliente conectado - Tecnología: {tecnologia}, Modelo: {modelo}")
+    print(f"Conexión WebSocket para {tecnologia} - {modelo}")
 
     try:
-        # Inicializar modelo
         if tecnologia == "yolo":
             model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
         else:
@@ -145,25 +168,20 @@ async def websocket_image(websocket: WebSocket, tecnologia: str = "yolo", modelo
         timestamp_ms = 0
         while True:
             data = await websocket.receive_text()
-            
-            # Decodificar imagen
             image_data = base64.b64decode(data)
-            nparr = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
             
-            # Procesar frame (manejo diferente para YOLO y MediaPipe)
             if tecnologia == "yolo":
-                processed_image = model.process_image(image)  # YOLO solo necesita la imagen
+                processed = model.process_image(image)
             else:
                 timestamp_ms += 1
-                processed_image = model.process_image(image, timestamp_ms)  # MediaPipe necesita timestamp
-            
-            # Codificar y enviar resultado
-            _, buffer = cv2.imencode('.jpg', processed_image)
+                processed = model.process_image(image, timestamp_ms)
+
+            _, buffer = cv2.imencode('.jpg', processed)
             await websocket.send_text(base64.b64encode(buffer).decode('utf-8'))
             
     except WebSocketDisconnect:
-        print("[WebSocket] Cliente desconectado")
+        print("Cliente desconectado")
     except Exception as e:
-        print(f"[WebSocket] Error: {str(e)}")
-        await websocket.close(code=1011)  # Código 1011 = Internal Error
+        print(f"Error: {str(e)}")
+        await websocket.close(code=1011)
