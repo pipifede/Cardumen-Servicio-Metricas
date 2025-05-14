@@ -164,18 +164,20 @@ async def upload_video(request: Request, file: UploadFile = File(...), tecnologi
     output_path.mkdir(parents=True, exist_ok=True)
     if tecnologia == "yolo":
         model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
-        model.process_video(str(input_path), str(output_path))
-        avi_output_dir = output_path / "predict"
-        output_files = list(avi_output_dir.glob("*.avi"))
-        if not output_files:
-            return {"error": "No se encontró archivo de salida"}
-        avi_file = output_files[0]
+        processed_data = model.process_video(str(input_path), str(output_path))
+        metrics = processed_data["metrics"]
+        avi_file = processed_data["output_path"]
     elif tecnologia == "mediapipe":
         model_path = Path(MEDIAPIPE_MODEL_PATH) / modelo
         model = MediaPipeObjectDetector(str(model_path))
         avi_file = model.process_video(str(input_path), str(output_path))
     file_path = convert_avi_to_mp4(str(avi_file))
 
+    #guardar metricas 
+    if (metrics):
+        metrics_path = output_path / "metrics.json"
+        with open(metrics_path, 'w') as file:
+            json.dump(metrics, file)
     # Enviar el video procesado directamente en la respuesta
     def iterfile():
         with open(file_path, "rb") as f:
@@ -186,13 +188,13 @@ async def upload_video(request: Request, file: UploadFile = File(...), tecnologi
         iterfile(),
         media_type="video/mp4",
         headers={
-            "Content-Disposition": f"attachment; filename=processed_{file.filename}",
+            "uuid": uuid_str,
             "Access-Control-Expose-Headers": "Content-Disposition"
         }
     )
-@router.get("/video/{filename}")
+@router.get("/videos/{filename}")
 async def get_video(filename: str):
-    video_path = Path(PROCESSED_DIR) / filename
+    video_path = Path(PROCESSED_DIR)/ 'videos' / filename /  'processed__output.mp4'
     if not video_path.exists():
         return {"error": "Video no encontrado"}
     
@@ -202,6 +204,20 @@ async def get_video(filename: str):
     
     return StreamingResponse(iterfile(), media_type="video/mp4")
 
+@router.get("/videos/{filename}/metrics")
+async def get_metrics(filename: str):
+    metrics_path = Path(PROCESSED_DIR) / "videos" / filename / "metrics.json"
+    
+    if not metrics_path.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Métricas no encontradas"}
+        )
+    
+    with open(metrics_path, 'r') as f:
+        metrics = json.load(f)
+    
+    return JSONResponse(content=metrics)
 
 @router.websocket("/ws/progress/{task_id}")
 async def progress_websocket(websocket: WebSocket, task_id: str):
