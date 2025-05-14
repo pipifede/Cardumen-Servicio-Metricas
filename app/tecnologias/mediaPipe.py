@@ -7,7 +7,8 @@ import mediapipe as mp
 import numpy as np
 import cv2
 import os
-
+import time
+import psutil
 
 class MediaPipeObjectDetector:
     def __init__(self, model_path: str):
@@ -17,39 +18,54 @@ class MediaPipeObjectDetector:
             max_results=25
         )
         self.detector = ObjectDetector.create_from_options(options)
+        self.metrics = {
+            'total_frames': 0,
+            'total_inference_time': 0,
+            'total_postprocess_time': 0,
+            'confidences': [],
+            'cpu_usage': [],
+            'start_time': 0
+        }
 
-    def process_image(self, image: np.ndarray, timestamp_ms: int = 0):
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
-        result = self.detector.detect_for_video(mp_image, timestamp_ms)
-        detections = result.detections
+    def _reset_metrics(self):
+        """Reinicia las métricas para cada procesamiento"""
+        self.metrics = {
+            'total_frames': 0,
+            'total_inference_time': 0,
+            'total_postprocess_time': 0,
+            'confidences': [],
+            'cpu_usage': [],
+            'start_time': time.time()
+        }
 
-        for detection in detections:
-            category = detection.categories[0]
-            if category.category_name.lower() != "person":
-                continue
-
-            bbox = detection.bounding_box
-            start_point = (int(bbox.origin_x), int(bbox.origin_y))
-            end_point = (int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height))
-
-            cv2.rectangle(image, start_point, end_point, (0, 255, 0), 2)
-            label = f"{category.category_name} {category.score:.2f}"
-            cv2.putText(image, label, (start_point[0], start_point[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-        return image
+    def _get_metrics(self):
+        """Calcula las métricas finales"""
+        elapsed = time.time() - self.metrics['start_time']
+        
+        return {
+            'cpu_usage': np.mean(self.metrics['cpu_usage']) if self.metrics['cpu_usage'] else 0,
+            'cpu_time': time.process_time(),
+            'wall_clock_time': elapsed,
+            'confidence': np.mean(self.metrics['confidences']) if self.metrics['confidences'] else 0,
+            'avg_inference_time': self.metrics['total_inference_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
+            'avg_postprocess_time': self.metrics['total_postprocess_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
+            'total_frames': self.metrics['total_frames']
+        }
 
     def process_video(self, video_path: str, output_path: str):
+        """Procesa un video completo y devuelve métricas"""
+        self._reset_metrics()
+        process = psutil.Process()
+        
         cap = cv2.VideoCapture(video_path)
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        os.makedirs(output_path, exist_ok=True)
-        out_path = os.path.join(output_path, "result.avi")
-
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+        os.makedirs(output_path, exist_ok=True)
+        out_path = os.path.join(output_path, "result.avi")
+        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'XVID'), fps, (width, height))
         frame_count = 0
 
         while cap.isOpened():
@@ -57,13 +73,58 @@ class MediaPipeObjectDetector:
             if not ret:
                 break
 
+            # Medición de tiempos
             timestamp_ms = int((frame_count / fps) * 1000)
+            
+            # Procesamiento del frame
+            start_time = time.time()
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+            
+            # Inferencia
+            inference_start = time.time()
+            result = self.detector.detect_for_video(mp_image, timestamp_ms)
+            self.metrics['total_inference_time'] += time.time() - inference_start
+            
+            # Post-procesamiento
+            postprocess_start = time.time()
+            detections = result.detections
+            confidences = []
+            
+            for detection in detections:
+                category = detection.categories[0]
+                if category.category_name.lower() != "person":
+                    continue
+                
+                # Capturar confianzas
+                confidences.append(category.score)
+                
+                # Dibujar bounding boxes
+                bbox = detection.bounding_box
+                start_point = (bbox.origin_x, bbox.origin_y)
+                end_point = (bbox.origin_x + bbox.width, bbox.origin_y + bbox.height)
+                cv2.rectangle(frame, start_point, end_point, (0, 255, 0), 2)
+                
+                # Etiqueta
+                label = f"{category.category_name} {category.score:.2f}"
+                cv2.putText(frame, label, (start_point[0], start_point[1] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            self.metrics['total_postprocess_time'] += time.time() - postprocess_start
+            self.metrics['confidences'].extend(confidences)
+            
+            # Escribir frame
+            out.write(frame)
+            
+            # Métricas adicionales
+            self.metrics['cpu_usage'].append(psutil.cpu_percent())
+            self.metrics['total_frames'] += 1
             frame_count += 1
-
-            processed = self.process_image(frame, timestamp_ms)
-            out.write(processed)
+            print(f"\r Procesando frame {frame_count}/{total_frames}", end="", flush=True)
 
         cap.release()
         out.release()
-        return out_path
-
+        
+        return {
+            "output_path": out_path,
+            "metrics": self._get_metrics()
+        }

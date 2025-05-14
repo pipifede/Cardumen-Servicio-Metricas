@@ -31,7 +31,7 @@ def convert_avi_to_mp4(avi_file_path):
         raise FileNotFoundError(avi_file_path)
     clip = moviepy.VideoFileClip(avi_file_path)
     path, file_name = os.path.split(avi_file_path)
-    output_name = os.path.join(path, 'processed_' + os.path.splitext(file_name)[0] + '.mp4')
+    output_name = os.path.join(path, 'processed_output.mp4')
     clip.write_videofile(output_name, codec="libx264")
     return output_name
 
@@ -170,7 +170,9 @@ async def upload_video(request: Request, file: UploadFile = File(...), tecnologi
     elif tecnologia == "mediapipe":
         model_path = Path(MEDIAPIPE_MODEL_PATH) / modelo
         model = MediaPipeObjectDetector(str(model_path))
-        avi_file = model.process_video(str(input_path), str(output_path))
+        processed_data = model.process_video(str(input_path), str(output_path))
+        metrics = processed_data["metrics"]
+        avi_file = processed_data["output_path"]
     file_path = convert_avi_to_mp4(str(avi_file))
 
     #guardar metricas 
@@ -194,7 +196,7 @@ async def upload_video(request: Request, file: UploadFile = File(...), tecnologi
     )
 @router.get("/videos/{filename}")
 async def get_video(filename: str):
-    video_path = Path(PROCESSED_DIR)/ 'videos' / filename /  'processed__output.mp4'
+    video_path = Path(PROCESSED_DIR)/ 'videos' / filename /  'processed_output.mp4'
     if not video_path.exists():
         return {"error": "Video no encontrado"}
     
