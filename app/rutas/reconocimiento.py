@@ -113,7 +113,7 @@ async def process_video_real_time(
             cap.release()
         print(f"Limpieza completada para {task_id}")
 
-@router.post("/upload/video")
+@router.post("/upload") ## ENDPOINT PARA IR RECIBIENDO LOS FRAMES A MEDIDA QUE SE PROCESAN (EN PROCESO)
 async def upload_video(
     file: UploadFile = File(...),
     tecnologia: str = Form(...),
@@ -140,6 +140,56 @@ async def upload_video(
     
     return {"status": "processing", "task_id": task_id}
 
+@router.post("/upload/video")
+async def upload_video(request: Request, file: UploadFile = File(...), tecnologia: str = Form("yolo"), modelo: str = Form(MODELOSYOLO[0])):
+    print("\n\n✅ TECNOLOGÍA RECIBIDA:", tecnologia)
+    print("\n\n✅ MODELO RECIBIDO:", modelo)
+    if tecnologia not in ["yolo", "mediapipe"]:
+        return {"error": f"Tecnología no soportada: {tecnologia}"}
+
+    if not checkModelo(modelo, tecnologia):
+        return {"error": f"Modelo '{modelo}' no es válido para la tecnología '{tecnologia}'"}
+
+    if not checkModelo(modelo, tecnologia):
+        return {"error": f"Modelo '{modelo}' no es válido para la tecnología '{tecnologia}'"}
+    if not file.filename.endswith(('.mp4', '.avi', '.mov')):
+        return {"error": "Tipo de archivo no soportado"}
+    uuid_str = str(uuid.uuid4())
+    input_path = Path(UPLOAD_DIR) / "videos" / f"{uuid_str}{Path(file.filename).suffix}"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(input_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    output_path = Path(PROCESSED_DIR) / "videos" / uuid_str
+    output_path.mkdir(parents=True, exist_ok=True)
+    if tecnologia == "yolo":
+        model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
+        model.process_video(str(input_path), str(output_path))
+        avi_output_dir = output_path / "predict"
+        output_files = list(avi_output_dir.glob("*.avi"))
+        if not output_files:
+            return {"error": "No se encontró archivo de salida"}
+        avi_file = output_files[0]
+    elif tecnologia == "mediapipe":
+        model_path = Path(MEDIAPIPE_MODEL_PATH) / modelo
+        model = MediaPipeObjectDetector(str(model_path))
+        avi_file = model.process_video(str(input_path), str(output_path))
+    file_path = convert_avi_to_mp4(str(avi_file))
+
+    # Enviar el video procesado directamente en la respuesta
+    def iterfile():
+        with open(file_path, "rb") as f:
+            while chunk := f.read(1024 * 1024):  # Leer en chunks de 1MB
+                yield chunk
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": f"attachment; filename=processed_{file.filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
 @router.get("/video/{filename}")
 async def get_video(filename: str):
     video_path = Path(PROCESSED_DIR) / filename
