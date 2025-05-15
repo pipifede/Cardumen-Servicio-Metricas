@@ -41,6 +41,10 @@ class YOLOModel:
             'total_frames': self.metrics['total_frames']
         }
 
+    def process_image(self, image: np.ndarray):
+        """Procesa un frame de imagen con YOLO"""
+        results = self.model(image)
+        return results[0].plot()
     def process_video(self, video_path: str, output_path: str):
         """Procesa un video completo y devuelve métricas"""
         self._reset_metrics()

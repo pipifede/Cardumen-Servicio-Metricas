@@ -128,3 +128,22 @@ class MediaPipeObjectDetector:
             "output_path": out_path,
             "metrics": self._get_metrics()
         }
+    def process_image(self, image: np.ndarray, timestamp_ms: int = 0):
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+        result = self.detector.detect_for_video(mp_image, timestamp_ms)
+        detections = result.detections
+
+        for detection in detections:
+            category = detection.categories[0]
+            if category.category_name.lower() != "person":
+                continue
+
+            bbox = detection.bounding_box
+            start_point = (int(bbox.origin_x), int(bbox.origin_y))
+            end_point = (int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height))
+
+            cv2.rectangle(image, start_point, end_point, (0, 255, 0), 2)
+            label = f"{category.category_name} {category.score:.2f}"
+            cv2.putText(image, label, (start_point[0], start_point[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        return image
