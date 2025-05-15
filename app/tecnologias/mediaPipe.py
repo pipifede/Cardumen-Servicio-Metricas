@@ -15,7 +15,8 @@ class MediaPipeObjectDetector:
         options = ObjectDetectorOptions(
             base_options=BaseOptions(model_asset_path=model_path),
             running_mode=VisionTaskRunningMode.VIDEO,
-            max_results=25
+            max_results=25,
+            score_threshold=0.2
         )
         self.detector = ObjectDetector.create_from_options(options)
         self.metrics = {
@@ -92,8 +93,6 @@ class MediaPipeObjectDetector:
             
             for detection in detections:
                 category = detection.categories[0]
-                if category.category_name.lower() != "person":
-                    continue
                 
                 # Capturar confianzas
                 confidences.append(category.score)
@@ -135,8 +134,6 @@ class MediaPipeObjectDetector:
 
         for detection in detections:
             category = detection.categories[0]
-            if category.category_name.lower() != "person":
-                continue
 
             bbox = detection.bounding_box
             start_point = (int(bbox.origin_x), int(bbox.origin_y))
