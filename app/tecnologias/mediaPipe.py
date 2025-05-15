@@ -103,7 +103,7 @@ class MediaPipeObjectDetector:
             'wall_clock_time': elapsed,
             'confidence': np.mean(self.metrics['confidences']) if self.metrics['confidences'] else 0,
             'avg_inference_time': self.metrics['total_inference_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
-            'avg_postprocess_time': self.metrics['total_postprocess_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
+            'avg_processing_time': self.metrics['total_postprocess_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
             'total_frames': self.metrics['total_frames'],
             'current_fps': self.metrics['total_frames'] / elapsed if elapsed > 0 else 0
         }
