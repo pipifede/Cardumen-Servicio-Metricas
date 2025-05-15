@@ -25,10 +25,9 @@ class MediaPipeObjectDetector:
             'total_postprocess_time': 0,
             'confidences': [],
             'cpu_usage': [],
-            'start_time': 0
         }
 
-    def _reset_metrics(self):
+    def start_metrics(self):
         """Reinicia las métricas para cada procesamiento"""
         self.metrics = {
             'total_frames': 0,
@@ -53,9 +52,64 @@ class MediaPipeObjectDetector:
             'total_frames': self.metrics['total_frames']
         }
 
+    def update_frame_metrics(self, inference_time, postprocess_time, confidences):
+        """Actualiza las métricas con los datos del frame actual"""
+        self.metrics['total_frames'] += 1
+        self.metrics['total_inference_time'] += inference_time
+        self.metrics['total_postprocess_time'] += postprocess_time
+        self.metrics['confidences'].extend(confidences)
+        self.metrics['cpu_usage'].append(psutil.cpu_percent())
+        self.metrics['last_frame_time'] = time.time()
+    
+    def process_image(self, image: np.ndarray, timestamp_ms: int = 0, current_frame: int = 1, total_frames: int = 1):
+        """Procesa un frame individual"""
+        print(f"\r Procesando frame {current_frame}/{total_frames}", end="", flush=True)
+        start_time = time.time()
+        confidences = []
+
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+        inference_start = time.time()
+        result = self.detector.detect_for_video(mp_image, timestamp_ms)
+        inference_time = time.time() - inference_start
+
+        # Post-procesamiento
+        postprocess_start = time.time()
+        detections = result.detections
+        for detection in detections:
+            category = detection.categories[0]
+            confidences.append(category.score)
+
+            # Dibujar bounding box
+            bbox = detection.bounding_box
+            start_point = (int(bbox.origin_x), int(bbox.origin_y))
+            end_point = (int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height))
+
+            cv2.rectangle(image, start_point, end_point, (0, 255, 0), 2)
+            label = f"{category.category_name} {category.score:.2f}"
+            cv2.putText(image, label, (start_point[0], start_point[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        postprocess_time = time.time() - postprocess_start
+
+        # Actualizar métricas
+        self.update_frame_metrics(inference_time, postprocess_time, confidences)
+
+        return image
+
+    def get_current_metrics(self):
+        """Devuelve las métricas calculadas hasta el momento"""
+        elapsed = time.time() - self.metrics['start_time']
+        return {
+            'cpu_usage': np.mean(self.metrics['cpu_usage']) if self.metrics['cpu_usage'] else 0,
+            'wall_clock_time': elapsed,
+            'confidence': np.mean(self.metrics['confidences']) if self.metrics['confidences'] else 0,
+            'avg_inference_time': self.metrics['total_inference_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
+            'avg_postprocess_time': self.metrics['total_postprocess_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
+            'total_frames': self.metrics['total_frames'],
+            'current_fps': self.metrics['total_frames'] / elapsed if elapsed > 0 else 0
+        }
     def process_video(self, video_path: str, output_path: str):
         """Procesa un video completo y devuelve métricas"""
-        self._reset_metrics()
+        self.start_metrics()
         process = psutil.Process()
         
         cap = cv2.VideoCapture(video_path)
@@ -127,20 +181,4 @@ class MediaPipeObjectDetector:
             "output_path": out_path,
             "metrics": self._get_metrics()
         }
-    def process_image(self, image: np.ndarray, timestamp_ms: int = 0):
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
-        result = self.detector.detect_for_video(mp_image, timestamp_ms)
-        detections = result.detections
-
-        for detection in detections:
-            category = detection.categories[0]
-
-            bbox = detection.bounding_box
-            start_point = (int(bbox.origin_x), int(bbox.origin_y))
-            end_point = (int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height))
-
-            cv2.rectangle(image, start_point, end_point, (0, 255, 0), 2)
-            label = f"{category.category_name} {category.score:.2f}"
-            cv2.putText(image, label, (start_point[0], start_point[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        return image
+    

@@ -97,8 +97,10 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         try:
             if tecnologia == "yolo":
                 model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
+                model.start_metrics()
             else:
                 model = MediaPipeObjectDetector(str(Path(MEDIAPIPE_MODEL_PATH) / modelo))
+                model.start_metrics()
         except Exception as e:
             print(f"Error inicializando el modelo: {str(e)}")
             await manager.send_message(task_id, {
@@ -163,10 +165,10 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
             try:
                 # Procesar frame
                 if tecnologia == "yolo":
-                    processed_frame = model.process_image(frame)
+                    processed_frame = model.process_image(frame, frame_count, total_frames)
                 else:
                     timestamp_ms = int(frame_count * (1000 / fps))
-                    processed_frame = model.process_image(frame, timestamp_ms)
+                    processed_frame = model.process_image(frame, timestamp_ms, frame_count, total_frames)
                 
                 # Guardar frame procesado para el video final
                 if output_writer is not None:
@@ -218,6 +220,12 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         cap.release()
         if output_writer is not None:
             output_writer.release()
+
+        # Guardar métricas finales
+        final_metrics = model.get_current_metrics() if model else {}
+        metrics_path = output_path / "metrics.json"
+        with open(metrics_path, 'w') as f:
+            json.dump(final_metrics, f)
         
         # Convertir video final a mp4 de alta calidad
         if output_file.exists():
@@ -230,6 +238,7 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                     await manager.send_message(task_id, {
                         "type": "complete",
                         "output_path": relative_path,
+                        "metrics": final_metrics,
                         "task_id": task_id
                     })
             except Exception as e:

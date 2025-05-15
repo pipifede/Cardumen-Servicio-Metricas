@@ -16,7 +16,7 @@ class YOLOModel:
             'cpu_usage': []
         }
 
-    def _reset_metrics(self):
+    def start_metrics(self):
         """Reinicia las métricas para cada procesamiento"""
         self.metrics = {
             'total_frames': 0,
@@ -27,7 +27,7 @@ class YOLOModel:
             'start_time': time.time()
         }
 
-    def _get_metrics(self):
+    def get_metrics(self):
         """Calcula las métricas finales"""
         elapsed = time.time() - self.metrics['start_time']
         
@@ -41,13 +41,54 @@ class YOLOModel:
             'total_frames': self.metrics['total_frames']
         }
 
-    def process_image(self, image: np.ndarray):
-        """Procesa un frame de imagen con YOLO"""
-        results = self.model(image)
-        return results[0].plot()
+    def update_frame_metrics(self, inference_time, processing_time, confidences):
+        """Actualiza las métricas con los datos del frame actual"""
+        self.metrics['total_frames'] += 1
+        self.metrics['total_inference_time'] += inference_time
+        self.metrics['total_processing_time'] += processing_time
+        self.metrics['confidences'].extend(confidences)
+        self.metrics['cpu_usage'].append(psutil.cpu_percent())
+        self.metrics['last_frame_time'] = time.time()
+
+    def process_image(self, image: np.ndarray, current_frame: int = 1, total_frames: int = 1):
+        """Procesa un frame individual"""
+        print(f"\r Procesando frame {current_frame}/{total_frames}", end="", flush=True)
+        start_time = time.time()
+        
+        # Procesamiento con YOLO
+        results = self.model.track(image, persist=True, verbose=False)
+        inference_time = time.time() - start_time
+        
+        # Post-procesamiento
+        processed_frame = results[0].plot()
+        processing_time = time.time() - start_time
+        
+        # Obtener confianzas
+        confidences = []
+        if results[0].boxes is not None:
+            confidences = results[0].boxes.conf.cpu().numpy().tolist()
+        
+        # Actualizar métricas
+        self.update_frame_metrics(inference_time, processing_time, confidences)
+        
+        return processed_frame
+
+    def get_current_metrics(self):
+        """Devuelve las métricas calculadas hasta el momento"""
+        elapsed = time.time() - self.metrics['start_time']
+        return {
+            'cpu_usage': np.mean(self.metrics['cpu_usage']) if self.metrics['cpu_usage'] else 0,
+            'wall_clock_time': elapsed,
+            'confidence': np.mean(self.metrics['confidences']) if self.metrics['confidences'] else 0,
+            'avg_inference_time': self.metrics['total_inference_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
+            'avg_processing_time': self.metrics['total_processing_time'] / self.metrics['total_frames'] if self.metrics['total_frames'] > 0 else 0,
+            'total_frames': self.metrics['total_frames'],
+            'current_fps': self.metrics['total_frames'] / elapsed if elapsed > 0 else 0
+        }
+
     def process_video(self, video_path: str, output_path: str):
         """Procesa un video completo y devuelve métricas"""
-        self._reset_metrics()
+        self.start_metrics()
         
         # Configurar video de entrada y salida
         cap = cv2.VideoCapture(video_path)
@@ -100,5 +141,5 @@ class YOLOModel:
         print(f"📁 Video guardado en: {output_video}")
         return {
             "output_path": output_video,
-            "metrics": self._get_metrics()
+            "metrics": self.get_metrics()
         }
