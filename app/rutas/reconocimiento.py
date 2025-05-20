@@ -430,6 +430,7 @@ async def progress_websocket(websocket: WebSocket, task_id: str):
         # Mantener la conexión abierta
         while True:
             data = await websocket.receive_text()
+            data = json.loads(data)
             # Si el cliente envía "ping", responder con el último frame
             if data == "ping":
                 last_frame = manager.get_last_frame(task_id)
@@ -451,7 +452,8 @@ async def progress_websocket(websocket: WebSocket, task_id: str):
 async def websocket_image(
     websocket: WebSocket, 
     tecnologia: str = "yolo", 
-    modelo: str = MODELOSYOLO[0]
+    modelo: str = MODELOSYOLO[0],
+    max_latency: int = 500
 ):
     await websocket.accept()
     print(f"Conexión WebSocket para tiempo real: {tecnologia} - {modelo}")
@@ -465,47 +467,65 @@ async def websocket_image(
 
         timestamp_ms = 0
         last_frame = None
+        frame_times = []  # Lista para almacenar los últimos tiempos de frame
         
         while True:
             # Recibir frame del cliente
             data = await websocket.receive_text()
+            data = json.loads(data)
+            current_time = time()
             
-            # Si es un ping, enviar el último frame procesado
-            if data == "ping" and last_frame is not None:
-                await websocket.send_text(last_frame)
-                continue
+            if current_time - data["timestamp"] < (max_latency / 1000):
+                # Calcular FPS
+                frame_times.append(current_time)
+                if len(frame_times) > 30:  # Mantener solo los últimos 30 frames para el cálculo
+                    frame_times.pop(0)
                 
-            # Procesar imagen
-            try:
-                image_data = base64.b64decode(data)
-                image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
-                
-                if tecnologia == "yolo":
-                    processed = model.process_image(image)
+                if len(frame_times) > 1:
+                    fps = len(frame_times) / (frame_times[-1] - frame_times[0])
                 else:
-                    timestamp_ms += 1
-                    processed = model.process_image(image, timestamp_ms)
+                    fps = 0
+                
+                # Procesar imagen
+                try:
+                    image_data = base64.b64decode(data["frame"])
+                    image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
+                    
+                    if tecnologia == "yolo":
+                        processed = model.process_image(image)
+                    else:
+                        timestamp_ms += 1
+                        processed = model.process_image(image, timestamp_ms)
 
-                # Comprimir con mejor calidad
-                _, buffer = cv2.imencode('.jpg', processed, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                frame_base64 = base64.b64encode(buffer).decode('utf-8')
-                
-                # Guardar este frame como el último conocido
-                last_frame = frame_base64
-                
-                # Enviar frame procesado
-                await websocket.send_text(frame_base64)
-            except Exception as e:
-                print(f"Error procesando frame: {str(e)}")
-                
-                # Si hay un error pero tenemos un frame anterior, enviar ese
-                if last_frame is not None:
-                    await websocket.send_text(last_frame)
-                else:
+                    # Comprimir con mejor calidad
+                    _, buffer = cv2.imencode('.jpg', processed, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                    
+                    # Guardar este frame como el último conocido
+                    last_frame = frame_base64
+                    
+                    # Enviar frame procesado junto con FPS
                     await websocket.send_json({
-                        "type": "error",
-                        "message": f"Error procesando frame: {str(e)}"
+                        "frame": frame_base64,
+                        "fps": round(fps, 2)
                     })
+                except Exception as e:
+                    print(f"Error procesando frame: {str(e)}")
+                    
+                    # Si hay un error pero tenemos un frame anterior, enviar ese
+                    if last_frame is not None:
+                        await websocket.send_json({
+                            "frame": last_frame,
+                            "fps": round(fps, 2)
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"Error procesando frame: {str(e)}"
+                        })
+                    continue
+            else:
+                print("Skipping frame due to latency")
                 continue
 
     except WebSocketDisconnect:
