@@ -76,3 +76,4 @@ urllib3==2.4.0
 uvicorn==0.34.2
 watchfiles==1.0.5
 websockets==11.0.3
+yt_dlp==2025.5.22
