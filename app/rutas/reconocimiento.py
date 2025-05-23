@@ -17,6 +17,8 @@ import asyncio
 import json
 from typing import Dict
 from fastapi.middleware.cors import CORSMiddleware
+import yt_dlp
+from fastapi import Query, Body
 
 router = APIRouter()
 
@@ -447,6 +449,53 @@ async def progress_websocket(websocket: WebSocket, task_id: str):
     finally:
         manager.disconnect(task_id)
         print(f"Recursos liberados para {task_id}")
+
+@router.post("/upload/stream")
+async def upload_stream(
+    stream_url: str = Form(...),
+    tecnologia: str = Form(...),
+    modelo: str = Form(...)
+):
+    if not checkModelo(modelo, tecnologia):
+        return JSONResponse({"error": "Modelo no válido para la tecnología seleccionada"}, status_code=400)
+    
+    task_id = str(uuid.uuid4())
+    # Lanzar la tarea de análisis en background con la URL del stream
+    task = asyncio.create_task(process_video_real_time(stream_url, task_id, tecnologia, modelo))
+    active_tasks[task_id] = task
+
+    return {"status": "processing", "task_id": task_id}
+
+
+@router.get("/get_youtube_stream_url")
+async def get_youtube_stream_url(youtube_url: str = Query(...)):
+
+    ydl_opts = {
+        "format": "best[ext=mp4]/best",
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+            # Buscar la URL del stream
+            formats = info.get("formats", [])
+            stream_url = None
+            # Intentar obtener el URL de formato HLS (m3u8) o el mejor mp4
+            for f in formats:
+                if f.get("protocol") == "m3u8_native":
+                    stream_url = f.get("url")
+                    break
+            if not stream_url and formats:
+                stream_url = formats[-1].get("url")  # fallback al último formato
+            if not stream_url:
+                return {"error": "No se encontró URL de stream para esta transmisión"}
+
+            return {"stream_url": stream_url}
+
+    except Exception as e:
+        return {"error": str(e)}
 
 @router.websocket("/ws/image")
 async def websocket_image(
