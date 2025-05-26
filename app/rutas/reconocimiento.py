@@ -18,7 +18,7 @@ import json
 from typing import Dict
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
-from fastapi import Query, Body
+from fastapi import Query
 
 router = APIRouter()
 
@@ -90,7 +90,28 @@ def convert_avi_to_mp4(avi_file_path, task_id=None):
         print(f"Error converting video: {str(e)}")
         raise
 
-async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps: str, new_res:str):
+
+import requests
+
+def mjpeg_frame_generator(url: str):
+    """
+    Lee un MJPEG multipart stream y produce frames OpenCV.
+    """
+    stream = requests.get(url, stream=True)
+    bytes_buffer = b""
+    
+    for chunk in stream.iter_content(chunk_size=1024):
+        bytes_buffer += chunk
+        a = bytes_buffer.find(b'\xff\xd8')  # JPEG start
+        b = bytes_buffer.find(b'\xff\xd9')  # JPEG end
+        if a != -1 and b != -1:
+            jpg = bytes_buffer[a:b+2]
+            bytes_buffer = bytes_buffer[b+2:]
+            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            yield frame
+
+
+async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str):
     temp_output_dir = None
     output_writer = None
     
@@ -112,38 +133,31 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
             return
 
         # Configurar captura de video
-        cap = cv2.VideoCapture(file_path)
-        if not cap.isOpened():
-            await manager.send_message(task_id, {
-                "type": "error",
-                "message": "No se pudo abrir el archivo de video"
-            })
-            return
+        is_mjpeg = (
+            file_path.startswith("http")
+            and any(ext in file_path for ext in [".mjpg", ".cgi", ".jpg", "faststream"])
+        )
 
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        print("!!!!!!!!!!!!!!!!!!!", fps, width, height)
-        #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA NUEVO
-        
-        #Si new_fps es 0 i es mayor que los FPS originales, no se modifica nada
-        if new_fps == "0" or int(new_fps) > fps: 
-            new_fps = fps
-        
-        if new_res != "0":
-            new_width, new_height = new_res.split("x")
-            new_width = int(new_width)
-            new_height = int(new_height)
+
+        if is_mjpeg:
+            cap = None
+            frame_generator = mjpeg_frame_generator(file_path)
+            fps = 15  # Asumido para MJPEG
+            width, height = 640, 480  # Placeholder, podés actualizar con shape del primer frame
+            total_frames = None  # No se puede determinar el número total de frames en un stream
         else:
-            new_width = width
-            new_height = height
+            cap = cv2.VideoCapture(file_path)
+            if not cap.isOpened():
+                await manager.send_message(task_id, {
+                    "type": "error",
+                    "message": "No se pudo abrir el archivo de video"
+                })
+                return
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        new_fps = float(new_fps)
-        print(fps)
-        print("!!!!!!!!!!!!!!!!!!!", new_fps, new_width, new_height)
-
         """ # Crear directorio temporal para el video de salida
         temp_output_dir = Path(PROCESSED_DIR) / f"temp_{task_id}"
         temp_output_dir.mkdir(parents=True, exist_ok=True) """
@@ -170,20 +184,29 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         last_frame_time = time()
         min_frame_interval = 1 / 30  # Máximo 30 fps para WebSocket
         
-        while cap.isOpened():
+        while True:
             # Verificar si la tarea fue cancelada
             if task_id not in active_tasks:
-                await manager.send_message(task_id, {"type": "cancelled"})
-                break
+                raise asyncio.CancelledError(f"Tarea cancelada por el cliente: {task_id}")
 
-            ret, frame = cap.read()
-            if not ret:
-                break
+            if is_mjpeg:
+                try:
+                    frame = next(frame_generator)
+                except StopIteration:
+                    break
+            else:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
 
             frame_count += 1
-            progress = (frame_count / total_frames) * 100
+            progress = (frame_count / total_frames) * 100 if total_frames else 0
             
             try:
+                if task_id not in active_tasks:
+                    await manager.send_message(task_id, {"type": "cancelled"})
+                    break
                 # Procesar frame
                 if tecnologia == "yolo":
                     processed_frame = model.process_image(frame, frame_count, total_frames)
@@ -214,7 +237,7 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                     manager.save_last_frame(task_id, frame_base64)
                     
                     # Enviar actualización solo si el progreso ha cambiado significativamente
-                    if abs(progress - last_progress_update) >= 1:
+                    if total_frames is None or abs(progress - last_progress_update) >= 1:
                         await manager.send_message(task_id, {
                             "type": "frame",
                             "frame": frame_base64,
@@ -225,6 +248,7 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                         last_progress_update = progress
                     
                     last_frame_time = current_time
+                    await asyncio.sleep(0)
                 
                 # Pequeña pausa para permitir otras operaciones asíncronas
                 if frame_count % 10 == 0:  # Cada 10 frames
@@ -479,6 +503,11 @@ async def progress_websocket(websocket: WebSocket, task_id: str):
     finally:
         manager.disconnect(task_id)
         print(f"Recursos liberados para {task_id}")
+        if task_id in active_tasks:
+            print(f"[WS] Cliente se desconectó, cancelando tarea {task_id}")
+            active_tasks[task_id].cancel()
+            del active_tasks[task_id]
+
 
 @router.post("/upload/stream")
 async def upload_stream(
@@ -491,6 +520,7 @@ async def upload_stream(
     
     task_id = str(uuid.uuid4())
     # Lanzar la tarea de análisis en background con la URL del stream
+    print(stream_url)
     task = asyncio.create_task(process_video_real_time(stream_url, task_id, tecnologia, modelo))
     active_tasks[task_id] = task
 
@@ -614,3 +644,4 @@ async def websocket_image(
         await websocket.close(code=1011)
     finally:
         print("Conexión WebSocket tiempo real cerrada")
+
