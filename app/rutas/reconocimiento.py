@@ -111,7 +111,7 @@ def mjpeg_frame_generator(url: str):
             yield frame
 
 
-async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str):
+async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps:str, new_res:str):
     temp_output_dir = None
     output_writer = None
     
@@ -540,7 +540,7 @@ async def upload_stream(
     task_id = str(uuid.uuid4())
     # Lanzar la tarea de análisis en background con la URL del stream
     print(stream_url)
-    task = asyncio.create_task(process_video_real_time(stream_url, task_id, tecnologia, modelo))
+    task = asyncio.create_task(process_video_real_time(stream_url, task_id, tecnologia, modelo, "0", "0"))
     active_tasks[task_id] = task
 
     return {"status": "processing", "task_id": task_id}
