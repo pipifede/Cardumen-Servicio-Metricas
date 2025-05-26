@@ -148,16 +148,16 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         # Configurar captura de video
         is_mjpeg = (
             file_path.startswith("http")
-            and any(ext in file_path for ext in [".mjpg", ".cgi", ".jpg", "faststream"])
+            and any(ext in file_path for ext in [".mjpg", ".cgi", ".jpg", "faststream", "GetOneShot"])
         )
 
 
         if is_mjpeg:
             cap = None
             frame_generator = mjpeg_frame_generator(file_path)
-            fps = 15  # Asumido para MJPEG
-            width, height = 640, 480  # Placeholder, podés actualizar con shape del primer frame
-            total_frames = None  # No se puede determinar el número total de frames en un stream
+            fps = 15 
+            width, height = 640, 480 
+            total_frames = None 
         else:
             cap = cv2.VideoCapture(file_path)
             if not cap.isOpened():
@@ -296,7 +296,8 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                 continue
 
         # Cerrar y liberar recursos
-        cap.release()
+        if cap is not None:
+            cap.release()
         if output_writer is not None:
             output_writer.release()
 
