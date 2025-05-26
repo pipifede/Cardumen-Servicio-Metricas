@@ -19,7 +19,6 @@ from typing import Dict
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 from fastapi import Query
-import httpx
 
 router = APIRouter()
 
@@ -134,7 +133,11 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
             return
 
         # Configurar captura de video
-        is_mjpeg = file_path.startswith("http") and "stream=" in file_path and ".jpg" in file_path
+        is_mjpeg = (
+            file_path.startswith("http")
+            and any(ext in file_path for ext in [".mjpg", ".cgi", ".jpg", "faststream"])
+        )
+
 
         if is_mjpeg:
             cap = None
@@ -506,6 +509,7 @@ async def upload_stream(
     
     task_id = str(uuid.uuid4())
     # Lanzar la tarea de análisis en background con la URL del stream
+    print(stream_url)
     task = asyncio.create_task(process_video_real_time(stream_url, task_id, tecnologia, modelo))
     active_tasks[task_id] = task
 
@@ -630,16 +634,3 @@ async def websocket_image(
     finally:
         print("Conexión WebSocket tiempo real cerrada")
 
-
-@router.get("/proxy_stream")
-async def proxy_stream(url: str):
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-    }
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url, headers=headers)
-        return StreamingResponse(
-            iter([r.content]),
-            media_type="application/vnd.apple.mpegurl",
-            headers={"Access-Control-Allow-Origin": "*"}
-        )
