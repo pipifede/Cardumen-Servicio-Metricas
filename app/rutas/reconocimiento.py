@@ -90,7 +90,7 @@ def convert_avi_to_mp4(avi_file_path, task_id=None):
         print(f"Error converting video: {str(e)}")
         raise
 
-async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str):
+async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps: str, new_res:str):
     temp_output_dir = None
     output_writer = None
     
@@ -125,6 +125,25 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
+        print("!!!!!!!!!!!!!!!!!!!", fps, width, height)
+        #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA NUEVO
+        
+        #Si new_fps es 0 i es mayor que los FPS originales, no se modifica nada
+        if new_fps == "0" or int(new_fps) > fps: 
+            new_fps = fps
+        
+        if new_res != "0":
+            new_width, new_height = new_res.split("x")
+            new_width = int(new_width)
+            new_height = int(new_height)
+        else:
+            new_width = width
+            new_height = height
+        
+        new_fps = float(new_fps)
+        print(fps)
+        print("!!!!!!!!!!!!!!!!!!!", new_fps, new_width, new_height)
+
         """ # Crear directorio temporal para el video de salida
         temp_output_dir = Path(PROCESSED_DIR) / f"temp_{task_id}"
         temp_output_dir.mkdir(parents=True, exist_ok=True) """
@@ -138,8 +157,8 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         output_writer = cv2.VideoWriter(
             str(output_file), 
             fourcc, 
-            fps, 
-            (width, height)
+            new_fps, 
+            (new_width, new_height)
         )
 
         frame_count = 0
@@ -174,6 +193,9 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                 
                 # Guardar frame procesado para el video final
                 if output_writer is not None:
+                    #Rescala el frame procesado segun la nueva res para guardarlo bien.
+                    if processed_frame.shape[1] != new_width or processed_frame.shape[0] != new_height:
+                        processed_frame = cv2.resize(processed_frame, (new_width, new_height))
                     output_writer.write(processed_frame)
                 
                 # Añadir al buffer circular
@@ -225,6 +247,12 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
 
         # Guardar métricas finales
         final_metrics = model.get_current_metrics() if model else {}
+        
+        final_metrics["original_fps"] = fps
+        final_metrics["processed_fps"] = new_fps
+        final_metrics["original_resolution"] = {"width": width, "height": height}
+        final_metrics["processed_resolution"] = {"width": new_width, "height": new_height}
+        
         metrics_path = output_path / "metrics.json"
         with open(metrics_path, 'w') as f:
             json.dump(final_metrics, f)
@@ -277,7 +305,9 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
 async def upload_video(
     file: UploadFile = File(...),
     tecnologia: str = Form(...),
-    modelo: str = Form(...)
+    modelo: str = Form(...),
+    fps: str = Form(...),
+    res: str = Form(...)
 ):
     if not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
         return {"error": "Formato de video no soportado"}
@@ -287,7 +317,7 @@ async def upload_video(
             {"error": "Modelo no válido para la tecnología seleccionada"},
             status_code=400
         )
-    
+    print(fps, res, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     task_id = str(uuid.uuid4())
     input_path = Path(UPLOAD_DIR) / "videos" / f"{task_id}{Path(file.filename).suffix}"
     
@@ -296,10 +326,10 @@ async def upload_video(
     
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    
+
     # Crear y almacenar la tarea
     task = asyncio.create_task(process_video_real_time(
-        str(input_path), task_id, tecnologia, modelo
+        str(input_path), task_id, tecnologia, modelo, fps, res
     ))
     active_tasks[task_id] = task
     
