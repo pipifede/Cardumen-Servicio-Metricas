@@ -110,6 +110,19 @@ def mjpeg_frame_generator(url: str):
             frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
             yield frame
 
+def resize_with_aspect_ratio(original_width, original_height, max_width, max_height):
+    aspect_ratio = original_width / original_height
+
+    # Ajustamos al alto máximo primero
+    new_height = min(original_height, max_height)
+    new_width = int(new_height * aspect_ratio)
+
+    # Si nos pasamos del ancho, corregimos
+    if new_width > max_width:
+        new_width = max_width
+        new_height = int(new_width / aspect_ratio)
+
+    return new_width, new_height
 
 async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps:str, new_res:str):
     temp_output_dir = None
@@ -157,7 +170,8 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
+            aspect_ratio = width/height
+            
         """ # Crear directorio temporal para el video de salida
         temp_output_dir = Path(PROCESSED_DIR) / f"temp_{task_id}"
         temp_output_dir.mkdir(parents=True, exist_ok=True) """
@@ -166,8 +180,6 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         output_path.mkdir(parents=True, exist_ok=True)
         output_file = Path(PROCESSED_DIR) / "videos" / task_id / "processed_output_frames.mp4"
                 
-        print("!!!!!!!!!!!!!!!!!!!", fps, width, height)
-        #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA NUEVO
         
         #Si new_fps es 0 i es mayor que los FPS originales, no se modifica nada
         if new_fps == "0" or int(new_fps) > fps: 
@@ -177,13 +189,13 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
             new_width, new_height = new_res.split("x")
             new_width = int(new_width)
             new_height = int(new_height)
+            new_width, new_height = resize_with_aspect_ratio(width, height, new_width, new_height)
         else:
             new_width = width
             new_height = height
-        
+
         new_fps = float(new_fps)
         print(fps)
-        print("!!!!!!!!!!!!!!!!!!!", new_fps, new_width, new_height)
         
         # Configurar escritor de video
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
