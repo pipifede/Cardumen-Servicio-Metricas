@@ -165,6 +165,25 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         output_path = Path(PROCESSED_DIR) / "videos" / task_id
         output_path.mkdir(parents=True, exist_ok=True)
         output_file = Path(PROCESSED_DIR) / "videos" / task_id / "processed_output_frames.mp4"
+                
+        print("!!!!!!!!!!!!!!!!!!!", fps, width, height)
+        #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA NUEVO
+        
+        #Si new_fps es 0 i es mayor que los FPS originales, no se modifica nada
+        if new_fps == "0" or int(new_fps) > fps: 
+            new_fps = fps
+        
+        if new_res != "0":
+            new_width, new_height = new_res.split("x")
+            new_width = int(new_width)
+            new_height = int(new_height)
+        else:
+            new_width = width
+            new_height = height
+        
+        new_fps = float(new_fps)
+        print(fps)
+        print("!!!!!!!!!!!!!!!!!!!", new_fps, new_width, new_height)
         
         # Configurar escritor de video
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
