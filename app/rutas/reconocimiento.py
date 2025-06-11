@@ -124,19 +124,32 @@ def resize_with_aspect_ratio(original_width, original_height, max_width, max_hei
 
     return new_width, new_height
 
+def serialize_boxes(boxes):
+    """Convert YOLO boxes object to a JSON-serializable format"""
+    if boxes is None:
+        return None
+    
+    serialized = []
+    for box in boxes:
+        box_data = {
+            'xyxy': box.xyxy.tolist()[0],  # Convert numpy array to list
+            'conf': float(box.conf),  # Convert numpy float to Python float
+            'cls': int(box.cls),  # Convert numpy int to Python int
+            'id': int(box.id) if box.id is not None else None
+        }
+        serialized.append(box_data)
+    return serialized
+
 async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps:str, new_res:str):
     temp_output_dir = None
     output_writer = None
+    all_boxes = []  # List to store boxes for each frame
     
     try:
         # Inicializar modelo
         try:
-            if tecnologia == "yolo":
-                model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
-                model.start_metrics()
-            else:
-                model = MediaPipeObjectDetector(str(Path(MEDIAPIPE_MODEL_PATH) / modelo))
-                model.start_metrics()
+            model = YOLOModel(Path(YOLO_MODEL_PATH if tecnologia == "yolo" else MEDIAPIPE_MODEL_PATH) / modelo)
+            model.start_metrics()
         except Exception as e:
             print(f"Error inicializando el modelo: {str(e)}")
             await manager.send_message(task_id, {
@@ -240,7 +253,17 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                     break
                 # Procesar frame
                 if tecnologia == "yolo":
-                    processed_frame = model.process_image(frame, frame_count, total_frames)
+                    result = model.process_image(frame, frame_count, total_frames)
+                    processed_frame = result["processed_frame"]
+                    results = result["results"]
+                    print("[DEBUG] Results")
+                    # Store boxes data
+                    print("[DEBUG] Serializing boxes")
+                    frame_boxes = serialize_boxes(results[0].boxes)
+                    all_boxes.append({
+                        'frame_number': frame_count,
+                        'boxes': frame_boxes
+                    })
                 else:
                     timestamp_ms = int(frame_count * (1000 / fps))
                     processed_frame = model.process_image(frame, timestamp_ms, frame_count, total_frames)
@@ -312,6 +335,17 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         metrics_path = output_path / "metrics.json"
         with open(metrics_path, 'w') as f:
             json.dump(final_metrics, f)
+        
+        # Save boxes data alongside the video
+        if tecnologia == "yolo" and all_boxes:
+            boxes_path = output_path / "detection_boxes.json"
+            with open(boxes_path, 'w') as f:
+                json.dump({
+                    'model': modelo,
+                    'total_frames': total_frames,
+                    'fps': fps,
+                    'detections': all_boxes
+                }, f)
         
         # Convertir video final a mp4 de alta calidad
         if output_file.exists():
@@ -633,7 +667,8 @@ async def websocket_image(
                     image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
                     
                     if tecnologia == "yolo":
-                        processed = model.process_image(image)
+                        result = model.process_image(image)
+                        processed = result["processed_frame"]
                     else:
                         timestamp_ms += 1
                         processed = model.process_image(image, timestamp_ms)
@@ -676,4 +711,19 @@ async def websocket_image(
         await websocket.close(code=1011)
     finally:
         print("Conexión WebSocket tiempo real cerrada")
+
+@router.get("/videos/{filename}/boxes")
+async def get_detection_boxes(filename: str):
+    boxes_path = Path(PROCESSED_DIR) / "videos" / filename / "detection_boxes.json"
+    
+    if not boxes_path.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Detection boxes not found"}
+        )
+    
+    with open(boxes_path, 'r') as f:
+        boxes_data = json.load(f)
+    
+    return JSONResponse(content=boxes_data)
 
