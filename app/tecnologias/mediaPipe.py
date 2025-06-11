@@ -78,16 +78,21 @@ class MediaPipeObjectDetector:
         for detection in detections:
             category = detection.categories[0]
             confidences.append(category.score)
+    
+            if category.category_name == 'person':
+                # Dibujar bounding box
+                bbox = detection.bounding_box
+                x1 = int(bbox.origin_x)
+                y1 = int(bbox.origin_y)
+                x2 = int(bbox.origin_x + bbox.width)
+                y2 = int(bbox.origin_y + bbox.height)
+                center_x = (x1 + x2) // 2
+                center_y = (y1 + y2) // 2
 
-            # Dibujar bounding box
-            bbox = detection.bounding_box
-            start_point = (int(bbox.origin_x), int(bbox.origin_y))
-            end_point = (int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height))
-
-            cv2.rectangle(image, start_point, end_point, (0, 255, 0), 2)
-            label = f"{category.category_name} {category.score:.2f}"
-            cv2.putText(image, label, (start_point[0], start_point[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                cv2.rectangle(image, (x1,y1), (x2,y2), (0, 255, 0), 2)
+                label = f"{category.category_name} {category.score:.2f} ({center_x},{center_y})"
+                cv2.putText(image, label, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         postprocess_time = time.time() - postprocess_start
 
         # Actualizar métricas

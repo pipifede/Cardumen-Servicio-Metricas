@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 import time
 import psutil
+from ultralytics.utils.plotting import Annotator
 
 class YOLOModel:
     def __init__(self, model_path: str):
@@ -50,27 +51,40 @@ class YOLOModel:
         self.metrics['cpu_usage'].append(psutil.cpu_percent())
         self.metrics['last_frame_time'] = time.time()
 
+
     def process_image(self, image: np.ndarray, current_frame: int = 1, total_frames: int = 1):
-        """Procesa un frame individual"""
         print(f"\r Procesando frame {current_frame}/{total_frames}", end="", flush=True)
         start_time = time.time()
-        
-        # Procesamiento con YOLO
+
         results = self.model.track(image, persist=True, verbose=False)
         inference_time = time.time() - start_time
-        
-        # Post-procesamiento
-        processed_frame = results[0].plot()
+
+        boxes = results[0].boxes
+        processed_frame = image.copy()
+        annotator = Annotator(processed_frame, line_width=2)
+
+        if boxes is not None:
+            for box in boxes:
+                cls = int(box.cls.cpu().item())
+                conf = float(box.conf.cpu().item())
+                track_id = int(box.id.item()) if box.id is not None else -1
+                x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+
+                if cls == 0:  # persona
+                    center_x = (x1 + x2) // 2
+                    center_y = (y1 + y2) // 2
+                    label = f"ID {track_id} ({conf*100:.1f}%) ({center_x},{center_y})"
+
+                    annotator.box_label([x1, y1, x2, y2], label, color=(255, 0, 0))
+
+        processed_frame = annotator.result()
         processing_time = time.time() - start_time
-        
-        # Obtener confianzas
+
         confidences = []
-        if results[0].boxes is not None:
-            confidences = results[0].boxes.conf.cpu().numpy().tolist()
-        
-        # Actualizar métricas
+        if boxes is not None:
+            confidences = boxes.conf.cpu().numpy().tolist()
+
         self.update_frame_metrics(inference_time, processing_time, confidences)
-        
         return processed_frame
 
     def get_current_metrics(self):
