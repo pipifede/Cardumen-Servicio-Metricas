@@ -860,8 +860,8 @@ async def render_video_with_box_id(task_id: str, box_ids: list[int]):
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Create video writer
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # Create video writer with H.264 codec
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')  # Use H.264 codec
         out = cv2.VideoWriter(str(output_file), fourcc, fps, (width, height))
         
         frame_count = 0
