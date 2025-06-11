@@ -1,4 +1,4 @@
-from fastapi import APIRouter, File, UploadFile, WebSocket, WebSocketDisconnect, Request, Form 
+from fastapi import APIRouter, File, UploadFile, WebSocket, WebSocketDisconnect, Request, Form, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pathlib import Path
 from app.tecnologias.yolo import YOLOModel
@@ -208,7 +208,6 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
             new_height = height
 
         new_fps = float(new_fps)
-        print(fps)
         
         # Configurar escritor de video
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -256,9 +255,7 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                     result = model.process_image(frame, frame_count, total_frames)
                     processed_frame = result["processed_frame"]
                     results = result["results"]
-                    print("[DEBUG] Results")
                     # Store boxes data
-                    print("[DEBUG] Serializing boxes")
                     frame_boxes = serialize_boxes(results[0].boxes)
                     all_boxes.append({
                         'frame_number': frame_count,
@@ -407,7 +404,6 @@ async def upload_video(
             {"error": "Modelo no válido para la tecnología seleccionada"},
             status_code=400
         )
-    print(fps, res, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     task_id = str(uuid.uuid4())
     input_path = Path(UPLOAD_DIR) / "videos" / f"{task_id}{Path(file.filename).suffix}"
     
@@ -485,24 +481,93 @@ async def upload_video(request: Request, file: UploadFile = File(...), tecnologi
             status_code=500
         )
 @router.get("/videos/{filename}")
-async def get_video(filename: str):
+async def get_video(filename: str, request: Request):
     video_path = Path(PROCESSED_DIR)/ 'videos' / filename /  'processed_output.mp4'
     if not video_path.exists():
         return {"error": "Video no encontrado"}
     
-    def iterfile():
-        with open(video_path, mode="rb") as file_like:
-            yield from file_like
+    file_size = video_path.stat().st_size
+    range_header = request.headers.get('range')
     
-    return StreamingResponse(
-        iterfile(), 
-        media_type="video/mp4",
-        headers={
-            "Content-Disposition": f"inline; filename={os.path.basename(filename)}",
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache"
-        }
-    )
+    # Common headers for both range and non-range requests
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f"inline; filename={os.path.basename(filename)}",
+        "Cache-Control": "no-cache",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Range, Content-Type, Accept",
+        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+        "Content-Type": "video/mp4; codecs=\"avc1.42E01E, mp4a.40.2\""
+    }
+    
+    if range_header:
+        try:
+            # Parse range header
+            range_type, range_value = range_header.split('=')
+            if range_type != 'bytes':
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Invalid range type"}
+                )
+            
+            # Parse range values
+            start, end = range_value.split('-')
+            start = int(start) if start else 0
+            end = int(end) if end else file_size - 1
+            
+            # Validate range
+            if start >= file_size or end >= file_size or start > end:
+                return JSONResponse(
+                    status_code=416,
+                    content={"error": "Requested range not satisfiable"}
+                )
+            
+            # Calculate content length
+            content_length = end - start + 1
+            
+            async def range_response():
+                with open(video_path, 'rb') as file:
+                    file.seek(start)
+                    remaining = content_length
+                    while remaining > 0:
+                        chunk_size = min(8192, remaining)
+                        chunk = file.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+                        remaining -= len(chunk)
+            
+            return StreamingResponse(
+                range_response(),
+                media_type="video/mp4",
+                headers={
+                    **common_headers,
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Length": str(content_length),
+                },
+                status_code=206
+            )
+            
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Invalid range request: {str(e)}"}
+            )
+    else:
+        # No range header, return full file
+        async def full_response():
+            with open(video_path, 'rb') as file:
+                while chunk := file.read(8192):
+                    yield chunk
+        
+        return StreamingResponse(
+            full_response(),
+            media_type="video/mp4",
+            headers={
+                **common_headers,
+                "Content-Length": str(file_size),
+            }
+        )
 
 @router.get("/videos/{filename}/metrics")
 async def get_metrics(filename: str):
@@ -586,7 +651,6 @@ async def upload_stream(
     
     task_id = str(uuid.uuid4())
     # Lanzar la tarea de análisis en background con la URL del stream
-    print(stream_url)
     task = asyncio.create_task(process_video_real_time(stream_url, task_id, tecnologia, modelo, "0", "0"))
     active_tasks[task_id] = task
 
@@ -726,4 +790,217 @@ async def get_detection_boxes(filename: str):
         boxes_data = json.load(f)
     
     return JSONResponse(content=boxes_data)
+
+@router.get("/videos/{task_id}/box_ids")
+async def get_box_ids(task_id: str):
+    boxes_path = Path(PROCESSED_DIR) / "videos" / task_id / "detection_boxes.json"
+    
+    if not boxes_path.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Detection boxes not found"}
+        )
+    
+    try:
+        with open(boxes_path, 'r') as f:
+            boxes_data = json.load(f)
+        
+        # Extract all box IDs from all frames
+        box_ids = set()
+        for detection in boxes_data.get('detections', []):
+            for box in detection.get('boxes', []):
+                if box.get('id') is not None:
+                    box_ids.add(box['id'])
+        print("[DEBUG] Box IDs", box_ids)
+        # Convert set to sorted list
+        return JSONResponse(content={"box_ids": sorted(list(box_ids))})
+    
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error processing box IDs: {str(e)}"}
+        )
+
+async def render_video_with_box_id(task_id: str, box_ids: list[int]):
+    """Re-render video showing only the specified box IDs"""
+    try:
+        # Load boxes data
+        boxes_path = Path(PROCESSED_DIR) / "videos" / task_id / "detection_boxes.json"
+        if not boxes_path.exists():
+            raise FileNotFoundError("Boxes data not found")
+        
+        with open(boxes_path, 'r') as f:
+            boxes_data = json.load(f)
+        
+        # Find original video
+        upload_dir = Path(UPLOAD_DIR) / "videos"
+        original_video = None
+        for file in upload_dir.glob(f"{task_id}.*"):
+            if file.suffix.lower() in ['.mp4', '.avi', '.mov']:
+                original_video = file
+                break
+        
+        if not original_video:
+            raise FileNotFoundError("Original video not found")
+        
+        # Create output directory
+        output_path = Path(PROCESSED_DIR) / "videos" / task_id / "filtered"
+        output_path.mkdir(parents=True, exist_ok=True)
+        # Create filename with all box IDs
+        box_ids_str = "_".join(map(str, sorted(box_ids)))
+        output_file = output_path / f"boxes_{box_ids_str}_video.mp4"
+        
+        # Open video
+        cap = cv2.VideoCapture(str(original_video))
+        if not cap.isOpened():
+            raise Exception("Could not open video")
+        
+        # Get video properties
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(str(output_file), fourcc, fps, (width, height))
+        
+        frame_count = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Find boxes for this frame
+            frame_boxes = None
+            for detection in boxes_data['detections']:
+                if detection['frame_number'] == frame_count + 1:  # +1 because frame_count is 0-based
+                    frame_boxes = detection['boxes']
+                    break
+            
+            if frame_boxes:
+                # Filter boxes for the specified IDs
+                filtered_boxes = [box for box in frame_boxes if box.get('id') in box_ids]
+                
+                # Draw only the filtered boxes
+                for box in filtered_boxes:
+                    x1, y1, x2, y2 = map(int, box['xyxy'])
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    # Add label with confidence
+                    label = f"ID: {box['id']} ({box['conf']:.2f})"
+                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            out.write(frame)
+            frame_count += 1
+        
+        # Cleanup
+        cap.release()
+        out.release()
+        
+        return str(output_file)
+    
+    except Exception as e:
+        print(f"Error in render_video_with_box_id: {str(e)}")
+        raise
+
+@router.post("/videos/{task_id}/boxes")
+async def get_video_with_boxes(task_id: str, request: Request, box_ids: list[int] = Body(...)):
+    """Endpoint to get video showing only specific box IDs"""
+    try:
+        output_file = await render_video_with_box_id(task_id, box_ids)
+        
+        # Get file size for range requests
+        file_size = Path(output_file).stat().st_size
+        
+        # Common headers for both range and non-range requests
+        common_headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f"inline; filename=boxes_{'_'.join(map(str, sorted(box_ids)))}_video.mp4",
+            "Cache-Control": "no-cache",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Range, Content-Type, Accept",
+            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+            "Content-Type": "video/mp4; codecs=\"avc1.42E01E, mp4a.40.2\""
+        }
+        
+        # Check for range header
+        range_header = request.headers.get('range')
+        if range_header:
+            try:
+                # Parse range header
+                range_type, range_value = range_header.split('=')
+                if range_type != 'bytes':
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "Invalid range type"}
+                    )
+                
+                # Parse range values
+                start, end = range_value.split('-')
+                start = int(start) if start else 0
+                end = int(end) if end else file_size - 1
+                
+                # Validate range
+                if start >= file_size or end >= file_size or start > end:
+                    return JSONResponse(
+                        status_code=416,
+                        content={"error": "Requested range not satisfiable"}
+                    )
+                
+                # Calculate content length
+                content_length = end - start + 1
+                
+                async def range_response():
+                    with open(output_file, 'rb') as file:
+                        file.seek(start)
+                        remaining = content_length
+                        while remaining > 0:
+                            chunk_size = min(8192, remaining)
+                            chunk = file.read(chunk_size)
+                            if not chunk:
+                                break
+                            yield chunk
+                            remaining -= len(chunk)
+                
+                return StreamingResponse(
+                    range_response(),
+                    media_type="video/mp4",
+                    headers={
+                        **common_headers,
+                        "Content-Range": f"bytes {start}-{end}/{file_size}",
+                        "Content-Length": str(content_length),
+                    },
+                    status_code=206
+                )
+                
+            except Exception as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Invalid range request: {str(e)}"}
+                )
+        else:
+            # No range header, return full file
+            async def full_response():
+                with open(output_file, 'rb') as file:
+                    while chunk := file.read(8192):
+                        yield chunk
+            
+            return StreamingResponse(
+                full_response(),
+                media_type="video/mp4",
+                headers={
+                    **common_headers,
+                    "Content-Length": str(file_size),
+                }
+            )
+    
+    except FileNotFoundError as e:
+        return JSONResponse(
+            status_code=404,
+            content={"error": str(e)}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error processing video: {str(e)}"}
+        )
 
