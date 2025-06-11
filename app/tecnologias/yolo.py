@@ -71,7 +71,7 @@ class YOLOModel:
         # Actualizar métricas
         self.update_frame_metrics(inference_time, processing_time, confidences)
         
-        return processed_frame
+        return {"processed_frame": processed_frame, "results": results}
 
     def get_current_metrics(self):
         """Devuelve las métricas calculadas hasta el momento"""
