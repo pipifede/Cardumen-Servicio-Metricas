@@ -884,10 +884,16 @@ async def render_video_with_box_id(task_id: str, box_ids: list[int]):
                 # Draw only the filtered boxes
                 for box in filtered_boxes:
                     x1, y1, x2, y2 = map(int, box['xyxy'])
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    # Add label with confidence
-                    label = f"ID: {box['id']} ({box['conf']:.2f})"
-                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                    center_x = (x1 + x2) // 2
+                    center_y = (y1 + y2) // 2
+                    label = f"ID {box['id']} ({box['conf']*100:.1f}%) ({center_x},{center_y})"
+                    # Get text size for background
+                    (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    # Draw blue background rectangle
+                    cv2.rectangle(frame, (x1, y1 - text_height - 10), (x1 + text_width, y1), (255, 0, 0), -1)
+                    # Draw the original label with original color
+                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             out.write(frame)
             frame_count += 1
