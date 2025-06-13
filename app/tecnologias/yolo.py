@@ -5,10 +5,19 @@ import cv2
 import time
 import psutil
 from ultralytics.utils.plotting import Annotator
+import torch
 
 class YOLOModel:
     def __init__(self, model_path: str):
-        self.model = YOLO(model_path)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = YOLO(model_path).to(device)
+        print(f"GPU disponible: {torch.cuda.is_available()}")
+        if device == "cuda":
+            print(f"  - Nombre de GPU: {torch.cuda.get_device_name(0)}")
+            print(f"  - Total memoria: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+            print(f"  - Modelo en: {next(self.model.model.parameters()).device}")
+        else:
+            print("  - Ejecutando en CPU")
         self.metrics = {
             'total_frames': 0,
             'total_inference_time': 0,
