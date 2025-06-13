@@ -148,7 +148,12 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
     try:
         # Inicializar modelo
         try:
-            model = YOLOModel(Path(YOLO_MODEL_PATH if tecnologia == "yolo" else MEDIAPIPE_MODEL_PATH) / modelo)
+            if tecnologia == "yolo":
+                model = YOLOModel(Path(YOLO_MODEL_PATH) / modelo)
+            elif tecnologia == "mediapipe":
+                model = MediaPipeObjectDetector(str(Path(MEDIAPIPE_MODEL_PATH) / modelo))
+            else:
+                raise ValueError(f"Tecnología no reconocida: {tecnologia}")
             model.start_metrics()
         except Exception as e:
             print(f"Error inicializando el modelo: {str(e)}")
