@@ -19,6 +19,34 @@ from typing import Dict
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 from fastapi import Query
+from pydantic import BaseModel
+from typing import List
+from fastapi import HTTPException 
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+    UploadFile,
+    File,
+    Form,
+    WebSocket,
+    Request,
+    Body
+)
+from fastapi.responses import JSONResponse, StreamingResponse
+
+class BoxTrajectory(BaseModel):
+    id: int
+    x: float
+    y: float
+
+class FrameTrajectory(BaseModel):
+    frame: int
+    boxes: List[BoxTrajectory]
+
+class TrajectoryResponse(BaseModel):
+    detections: List[FrameTrajectory]
 
 router = APIRouter()
 
@@ -139,6 +167,26 @@ def serialize_boxes(boxes):
         }
         serialized.append(box_data)
     return serialized
+
+def calculate_trajectories(boxes_data):
+    """
+    Procesa los datos de cajas para calcular trayectorias.
+    Devuelve un diccionario donde las claves son los IDs y los valores son listas de puntos (x,y,frame).
+    """
+    trajectories = {}
+    for frame_data in boxes_data.get('detections', []):
+        frame_num = frame_data['frame_number']
+        for box in frame_data.get('boxes', []):
+            if box.get('id') is not None:
+                box_id = box['id']
+                x1, y1, x2, y2 = box['xyxy']
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+                
+                if box_id not in trajectories:
+                    trajectories[box_id] = []
+                trajectories[box_id].append((center_x, center_y, frame_num))
+    return trajectories
 
 async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps:str, new_res:str):
     temp_output_dir = None
@@ -826,7 +874,7 @@ async def get_box_ids(task_id: str):
             content={"error": f"Error processing box IDs: {str(e)}"}
         )
 
-async def render_video_with_box_id(task_id: str, box_ids: list[int]):
+async def render_video_with_box_id(task_id: str, box_ids: list[int], show_trajectory: bool = False):
     """Re-render video showing only the specified box IDs"""
     try:
         # Load boxes data
@@ -860,6 +908,11 @@ async def render_video_with_box_id(task_id: str, box_ids: list[int]):
         if not cap.isOpened():
             raise Exception("Could not open video")
         
+        # Calcular trayectorias si se solicita
+        trajectories = {}
+        if show_trajectory:
+            trajectories = calculate_trajectories(boxes_data)
+
         # Get video properties
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -875,6 +928,19 @@ async def render_video_with_box_id(task_id: str, box_ids: list[int]):
             if not ret:
                 break
             
+            # Dibujar trayectorias primero (para que queden detrás de las cajas)
+            if show_trajectory:
+                for box_id in box_ids:
+                    if box_id in trajectories:
+                        path = trajectories[box_id]
+                        # Dibujar línea conectando los puntos
+                        for i in range(1, len(path)):
+                            if path[i][2] <= frame_count + 1:  # +1 porque frame_count es 0-based
+                                cv2.line(frame, 
+                                        (int(path[i-1][0]), int(path[i-1][1])),
+                                        (int(path[i][0]), int(path[i][1])),
+                                        (0, 255, 255), 2)  # Amarillo para las trayectorias
+
             # Find boxes for this frame
             frame_boxes = None
             for detection in boxes_data['detections']:
@@ -913,11 +979,62 @@ async def render_video_with_box_id(task_id: str, box_ids: list[int]):
         print(f"Error in render_video_with_box_id: {str(e)}")
         raise
 
+@router.get("/videos/{task_id}/trajectories", response_model=TrajectoryResponse)
+async def get_trajectories_data(task_id: str):
+    """
+    Endpoint para obtener datos de trayectorias en formato JSON
+    """
+    try:
+        # 1. Verificar si existe el análisis
+        boxes_path = Path(PROCESSED_DIR) / "videos" / task_id / "detection_boxes.json"
+        
+        if not boxes_path.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail="No se encontraron datos de detección para esta tarea"
+            )
+
+        # 2. Cargar los datos existentes
+        with open(boxes_path, 'r') as f:
+            boxes_data = json.load(f)
+
+        # 3. Procesar para el formato de trayectorias
+        detections = []
+        for frame_data in boxes_data.get('detections', []):
+            frame_entry = {
+                "frame": frame_data['frame_number'],
+                "boxes": []
+            }
+            
+            for box in frame_data.get('boxes', []):
+                if box.get('id') is not None:
+                    # Calcular centro de la caja
+                    x1, y1, x2, y2 = box['xyxy']
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    
+                    frame_entry['boxes'].append({
+                        "id": box['id'],
+                        "x": center_x,
+                        "y": center_y
+                    })
+            
+            if frame_entry['boxes']:  # Solo añadir frames con cajas
+                detections.append(frame_entry)
+
+        return {"detections": detections}
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al obtener trayectorias: {str(e)}"
+        )
+
 @router.post("/videos/{task_id}/boxes")
-async def get_video_with_boxes(task_id: str, request: Request, box_ids: list[int] = Body(...)):
+async def get_video_with_boxes(task_id: str, request: Request, box_ids: list[int] = Body(...), show_trajectory: bool = Body(False)):
     """Endpoint to get video showing only specific box IDs"""
     try:
-        output_file = await render_video_with_box_id(task_id, box_ids)
+        output_file = await render_video_with_box_id(task_id, box_ids, show_trajectory)
         
         # Get file size for range requests
         file_size = Path(output_file).stat().st_size
