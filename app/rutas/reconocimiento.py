@@ -36,6 +36,26 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, StreamingResponse
 
+COLOR_PALETTE = [
+  "#1f77b4", "#4e79a7", "#5c8fd8", "#7eb0d5", "#a6cee3",
+  "#e377c2", "#d62728", "#ff7f0e", "#ff9da7", "#ff9896",
+  "#2ca02c", "#8c564b", "#98df8a", "#17becf", "#bcbd22",
+  "#f7b6d2", "#ffbb78", "#c5b0d5", "#c49c94", "#dbdb8d",
+  "#9edae5", "#393b79", "#637939", "#843c39", "#e7ba52",
+	"#ad494a", "#a55194", "#6b6ecf"
+];
+
+def get_color_for_id(box_id: int) -> str:
+    """Implementación idéntica a la del frontend para asignación de colores"""
+    str_id = str(box_id)
+    hash_val = 0
+    for char in str_id:
+        hash_val = (hash_val << 5) - hash_val + ord(char)
+        hash_val = hash_val & 0xFFFFFFFF  # Convertir a entero de 32 bits
+    
+    index = abs(hash_val) % len(COLOR_PALETTE)
+    return COLOR_PALETTE[index]
+
 class BoxTrajectory(BaseModel):
     id: int
     x: float
@@ -933,13 +953,21 @@ async def render_video_with_box_id(task_id: str, box_ids: list[int], show_trajec
                 for box_id in box_ids:
                     if box_id in trajectories:
                         path = trajectories[box_id]
+                        # Obtener color consistente para este ID
+                        color = get_color_for_id(box_id)
+                        # Convertir color HEX a BGR (OpenCV usa BGR)
+                        bgr_color = (
+                            int(color[5:7], 16),  # B
+                            int(color[3:5], 16),  # G
+                            int(color[1:3], 16)   # R
+                        )
                         # Dibujar línea conectando los puntos
                         for i in range(1, len(path)):
                             if path[i][2] <= frame_count + 1:  # +1 porque frame_count es 0-based
                                 cv2.line(frame, 
                                         (int(path[i-1][0]), int(path[i-1][1])),
                                         (int(path[i][0]), int(path[i][1])),
-                                        (0, 255, 255), 2)  # Amarillo para las trayectorias
+                                        bgr_color, 2)  # Usar color consistente
 
             # Find boxes for this frame
             frame_boxes = None
@@ -954,15 +982,23 @@ async def render_video_with_box_id(task_id: str, box_ids: list[int], show_trajec
                 
                 # Draw only the filtered boxes
                 for box in filtered_boxes:
+                    box_id = box['id']
+                    color = get_color_for_id(box_id)
+                    bgr_color = (
+                        int(color[5:7], 16),  # B
+                        int(color[3:5], 16),  # G
+                        int(color[1:3], 16)   # R
+                    )
+                    
                     x1, y1, x2, y2 = map(int, box['xyxy'])
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), bgr_color, 2)
                     center_x = (x1 + x2) // 2
                     center_y = (y1 + y2) // 2
                     label = f"ID {box['id']} ({box['conf']*100:.1f}%) ({center_x},{center_y})"
                     # Get text size for background
                     (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                    # Draw blue background rectangle
-                    cv2.rectangle(frame, (x1, y1 - text_height - 10), (x1 + text_width, y1), (255, 0, 0), -1)
+                    # Draw background rectangle con el mismo color
+                    cv2.rectangle(frame, (x1, y1 - text_height - 10), (x1 + text_width, y1), bgr_color, -1)
                     # Draw the original label with original color
                     cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
