@@ -46,7 +46,6 @@ COLOR_PALETTE = [
 ];
 
 def get_color_for_id(box_id: int) -> str:
-    """Implementación idéntica a la del frontend para asignación de colores"""
     str_id = str(box_id)
     hash_val = 0
     for char in str_id:
@@ -189,16 +188,13 @@ def serialize_boxes(boxes):
     return serialized
 
 def calculate_trajectories(boxes_data):
-    """
-    Procesa los datos de cajas para calcular trayectorias.
-    Devuelve un diccionario donde las claves son los IDs y los valores son listas de puntos (x,y,frame).
-    """
     trajectories = {}
     for frame_data in boxes_data.get('detections', []):
         frame_num = frame_data['frame_number']
         for box in frame_data.get('boxes', []):
             if box.get('id') is not None:
                 box_id = box['id']
+                # Las coordenadas xyxy ya están procesadas por KalmanFilter
                 x1, y1, x2, y2 = box['xyxy']
                 center_x = (x1 + x2) / 2
                 center_y = (y1 + y2) / 2
@@ -328,8 +324,8 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                     result = model.process_image(frame, frame_count, total_frames)
                     processed_frame = result["processed_frame"]
                     results = result["results"]
-                    # Store boxes data
-                    frame_boxes = serialize_boxes(results[0].boxes)
+                    # Usar frame_boxes del resultado en lugar de serializar las boxes originales
+                    frame_boxes = result["frame_boxes"]
                     all_boxes.append({
                         'frame_number': frame_count,
                         'boxes': frame_boxes
