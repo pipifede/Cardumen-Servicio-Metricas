@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pathlib import Path
 from app.tecnologias.yolo import YOLOModel
 from app.tecnologias.mediaPipe import MediaPipeObjectDetector
+from app.tecnologias.group_behavior_analyzer import GroupBehaviorAnalyzer, visualize_group_behavior
 from app.config import UPLOAD_DIR, PROCESSED_DIR, YOLO_MODEL_PATH, MODELOSYOLO, MODELOS_MEDIAPIPE, MEDIAPIPE_MODEL_PATH
 import os
 import shutil
@@ -204,11 +205,21 @@ def calculate_trajectories(boxes_data):
                 trajectories[box_id].append((center_x, center_y, frame_num))
     return trajectories
 
-async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps:str, new_res:str):
+async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps: str, new_res: str, analyze_groups: bool = False):
     temp_output_dir = None
     output_writer = None
-    all_boxes = []  # List to store boxes for each frame
-    
+    all_boxes = []
+    group_analyzer = None
+
+    # Inicializar analizador de grupos si se solicita
+    if analyze_groups:
+        group_analyzer = GroupBehaviorAnalyzer(
+            proximity_threshold=100.0,
+            min_group_size=2,
+            temporal_window=30,
+            min_duration=15
+        )
+        
     try:
         # Inicializar modelo
         try:
@@ -330,6 +341,46 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                         'frame_number': frame_count,
                         'boxes': frame_boxes
                     })
+                    # print("antes de analizar comportamiento - - - - - - - - - - - - - - - - - - - - - - - - \n")
+                    print(analyze_groups, group_analyzer)
+                    if analyze_groups and group_analyzer:
+                        # print("analizando comportamiento en grupo - - - - - - - - - - - - - - - - - - - - - - - -")
+                        # Analizar comportamientos en este frame
+                        group_events = group_analyzer.analyze_frame(frame_boxes, frame_count)
+                        
+                        # Encontrar grupos activos
+                        current_groups = group_analyzer.find_groups(frame_boxes)
+                        
+                        # Visualizar comportamientos en el frame
+                        if group_events or current_groups:
+                            processed_frame = visualize_group_behavior(
+                                processed_frame, 
+                                current_groups, 
+                                group_events,
+                                frame_boxes
+                            )
+                        
+                        # Enviar información de grupos en tiempo real
+                        if group_events:
+                            group_info = {
+                                'frame': frame_count,
+                                'groups': current_groups,
+                                'events': [
+                                    {
+                                        'type': event.event_type,
+                                        'group_ids': event.group_ids,
+                                        'confidence': event.confidence,
+                                        'centroid': event.centroid
+                                    }
+                                    for event in group_events
+                                ]
+                            }
+                            await manager.send_message(task_id, {
+                                "type": "group_behavior",
+                                "data": group_info
+                            })
+                
+
                 else:
                     timestamp_ms = int(frame_count * (1000 / fps))
                     processed_frame = model.process_image(frame, timestamp_ms, frame_count, total_frames)
@@ -393,6 +444,21 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         # Guardar métricas finales
         final_metrics = model.get_current_metrics() if model else {}
         
+        if analyze_groups and group_analyzer:
+            behavior_summary = group_analyzer.get_behavior_summary()
+            
+            # Guardar análisis de comportamiento
+            behavior_path = output_path / "group_behavior_analysis.json"
+            with open(behavior_path, 'w') as f:
+                json.dump(behavior_summary, f, indent=2)
+            
+            # Incluir resumen en métricas finales
+            final_metrics["group_behavior_summary"] = {
+                'total_events': behavior_summary.get('total_events', 0),
+                'behavior_types': behavior_summary.get('behavior_types', {}),
+                'events_count': len(behavior_summary.get('events', []))
+            }
+
         final_metrics["original_fps"] = fps
         final_metrics["processed_fps"] = new_fps
         final_metrics["original_resolution"] = {"width": width, "height": height}
@@ -463,7 +529,8 @@ async def upload_video(
     tecnologia: str = Form(...),
     modelo: str = Form(...),
     fps: str = Form(...),
-    res: str = Form(...)
+    res: str = Form(...),
+    analyze_groups: bool = Form(False)  # Nuevo parámetro
 ):
     if not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
         return {"error": "Formato de video no soportado"}
@@ -473,22 +540,64 @@ async def upload_video(
             {"error": "Modelo no válido para la tecnología seleccionada"},
             status_code=400
         )
+        
     task_id = str(uuid.uuid4())
     input_path = Path(UPLOAD_DIR) / "videos" / f"{task_id}{Path(file.filename).suffix}"
     
-    # Asegurar que el directorio existe
     input_path.parent.mkdir(parents=True, exist_ok=True)
     
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Crear y almacenar la tarea
+    # Crear y almacenar la tarea con análisis grupal
     task = asyncio.create_task(process_video_real_time(
-        str(input_path), task_id, tecnologia, modelo, fps, res
+        str(input_path), task_id, tecnologia, modelo, fps, res, analyze_groups
     ))
     active_tasks[task_id] = task
     
     return {"status": "processing", "task_id": task_id}
+
+@router.get("/videos/{task_id}/group_behavior")
+async def get_group_behavior_analysis(task_id: str):
+    print("get comportamiento grupo")
+    behavior_path = Path(PROCESSED_DIR) / "videos" / task_id / "group_behavior_analysis.json"
+    if not behavior_path.exists():
+        return JSONResponse(status_code=404, content={"error": "Análisis de comportamiento grupal no encontrado"})
+    try:
+        with open(behavior_path, 'r') as f:
+            behavior_data = json.load(f)
+        return JSONResponse(content=behavior_data)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Error al cargar análisis de comportamiento: {str(e)}"})
+
+@router.post("/configure_group_analysis")
+async def configure_group_analysis(
+    proximity_threshold: float = Form(100.0),
+    min_group_size: int = Form(2),
+    max_group_size: int = Form(10),
+    temporal_window: int = Form(30),
+    min_duration: int = Form(15)
+):
+    config = {
+        "proximity_threshold": proximity_threshold,
+        "min_group_size": min_group_size,
+        "max_group_size": max_group_size,
+        "temporal_window": temporal_window,
+        "min_duration": min_duration
+    }
+    config_path = Path(PROCESSED_DIR) / "group_analysis_config.json"
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    return {"status": "config_saved", "config": config}
+
+@router.get("/videos/{task_id}/group_behavior_summary")
+async def get_group_behavior_summary(task_id: str):
+    path = Path(PROCESSED_DIR) / "videos" / task_id / "group_behavior_analysis.json"
+    if not path.exists():
+        return JSONResponse(status_code=404, content={"error": "Resumen no encontrado"})
+    with open(path, 'r') as f:
+        data = json.load(f)
+    return JSONResponse(content=data.get("summary", {}))
 
 @router.post("/upload/video")
 async def upload_video(request: Request, file: UploadFile = File(...), tecnologia: str = Form("yolo"), modelo: str = Form(MODELOSYOLO[0])):
