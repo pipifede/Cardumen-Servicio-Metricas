@@ -27,11 +27,6 @@ class KalmanFilter:
         
         self.kf.errorCovPost = np.eye(4, dtype=np.float32) * 0.1
 
-        print(f"DEBUG KalmanFilter initialized:")
-        print(f"  processNoiseCov (Q multiplier): {self.kf.processNoiseCov[0,0]}")
-        print(f"  measurementNoiseCov (R multiplier): {self.kf.measurementNoiseCov[0,0]}")
-        print(f"  errorCovPost (initial confidence): {self.kf.errorCovPost[0,0]}")
-
         # -----------------------------------
 
     def predict(self):
@@ -115,10 +110,14 @@ class YOLOModel:
             boxes = results[0].boxes
             for box in boxes:
                 try:
-                    if not isinstance(box.xyxy, torch.Tensor) or box.xyxy.numel() == 0:
-                        print(f"\nDEBUG ERROR DETECCION: Skipping box in frame {current_frame} due to invalid xyxy. Type: {type(box.xyxy)}, numel: {box.xyxy.numel() if isinstance(box.xyxy, torch.Tensor) else 'N/A'}")
-                        continue 
-
+                    if (
+                        not isinstance(box.xyxy, torch.Tensor) or
+                        box.xyxy.ndim == 0 or
+                        box.xyxy.shape[0] == 0 or
+                        box.xyxy[0].ndim == 0
+                    ):
+                        print(f"DEBUG: Box malformado o vacío en frame {current_frame}, salteando.")
+                        continue
                     # Obtener coordenadas originales
                     x1_raw, y1_raw, x2_raw, y2_raw = map(int, box.xyxy[0].cpu().numpy())
                     width_raw = x2_raw - x1_raw

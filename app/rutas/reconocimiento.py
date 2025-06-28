@@ -205,9 +205,55 @@ def calculate_trajectories(boxes_data):
                 trajectories[box_id].append((center_x, center_y, frame_num))
     return trajectories
 
+
+async def finalizar_video(model, tecnologia, modelo, fps, new_fps, width, height, new_width, new_height,
+                          all_boxes, output_file, output_path, frame_count, task_id):
+    try:
+        # Guardar métricas
+        final_metrics = {}
+        if model:
+            final_metrics = model.get_current_metrics()
+            final_metrics["original_fps"] = fps
+            final_metrics["processed_fps"] = new_fps
+            final_metrics["original_resolution"] = {"width": width, "height": height}
+            final_metrics["processed_resolution"] = {"width": new_width, "height": new_height}
+            metrics_path = output_path / "metrics.json"
+            with open(metrics_path, 'w') as f:
+                json.dump(final_metrics, f)
+
+        # Guardar boxes
+        if tecnologia == "yolo":
+            boxes_path = output_path / "detection_boxes.json"
+            with open(boxes_path, 'w') as f:
+                json.dump({
+                    'model': modelo,
+                    'total_frames': frame_count,
+                    'fps': fps,
+                    'detections': all_boxes
+                }, f)
+
+        # Convertir video a MP4
+        if output_file.exists():
+            final_output = convert_avi_to_mp4(str(output_file), task_id)
+            print(f"[✅] Video convertido: {final_output}")
+        # Enviar mensaje al frontend
+        if task_id in manager.active_connections:
+            await manager.send_message(task_id, {
+                "type": "complete",
+                "output_path": f"videos/{task_id}",
+                "metrics": final_metrics,
+                "task_id": task_id
+            })
+        else:
+            print(f"[❌] No hay conexión activa para {task_id}, no se pudo enviar mensaje 'complete'")
+
+    except Exception as e:
+        print(f"[❌] Error al finalizar procesamiento de {task_id}: {e}")
+
 async def process_video_real_time(file_path: str, task_id: str, tecnologia: str, modelo: str, new_fps: str, new_res: str, analyze_groups: bool = False):
     temp_output_dir = None
     output_writer = None
+    original_writer = None
     all_boxes = []
     group_analyzer = None
 
@@ -271,8 +317,9 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         
         output_path = Path(PROCESSED_DIR) / "videos" / task_id
         output_path.mkdir(parents=True, exist_ok=True)
-        output_file = Path(PROCESSED_DIR) / "videos" / task_id / "processed_output_frames.mp4"
-                
+        output_file = Path(PROCESSED_DIR) / "videos" / task_id / "processed_output_frames.avi"
+        original_path = Path(UPLOAD_DIR) / "videos" / f"{task_id}.avi"
+        original_path.parent.mkdir(parents=True, exist_ok=True)        
         
         #Si new_fps es 0 i es mayor que los FPS originales, no se modifica nada
         if new_fps == "0" or int(new_fps) > fps: 
@@ -290,13 +337,15 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         new_fps = float(new_fps)
         
         # Configurar escritor de video
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
         output_writer = cv2.VideoWriter(
             str(output_file), 
             fourcc, 
             new_fps, 
             (new_width, new_height)
         )
+        if not output_writer.isOpened():
+            raise RuntimeError(f"[❌] No se pudo abrir VideoWriter para {output_file}")
 
         frame_count = 0
         last_progress_update = 0
@@ -323,6 +372,11 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                     break
 
 
+            if original_writer is None:
+                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                original_writer = cv2.VideoWriter(str(original_path), fourcc, fps, (frame.shape[1], frame.shape[0]))
+            if original_writer.isOpened():
+                original_writer.write(frame)            
             frame_count += 1
             progress = (frame_count / total_frames) * 100 if total_frames else 0
             
@@ -390,7 +444,12 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
                     #Rescala el frame procesado segun la nueva res para guardarlo bien.
                     if processed_frame.shape[1] != new_width or processed_frame.shape[0] != new_height:
                         processed_frame = cv2.resize(processed_frame, (new_width, new_height))
+                    if processed_frame is None or not isinstance(processed_frame, np.ndarray) or processed_frame.size == 0:
+                        print(f"[⚠️] Frame inválido en {frame_count}, omitido.")
+                        continue
                     output_writer.write(processed_frame)
+                    if not output_writer.isOpened():
+                        raise RuntimeError(f"[❌] No se pudo inicializar VideoWriter para {output_file}")
                 
                 # Añadir al buffer circular
                 if len(frame_buffer) >= buffer_size:
@@ -438,70 +497,29 @@ async def process_video_real_time(file_path: str, task_id: str, tecnologia: str,
         # Cerrar y liberar recursos
         if cap is not None:
             cap.release()
+
         if output_writer is not None:
             output_writer.release()
+            await asyncio.sleep(0.1) 
+        
+        if original_writer is not None:
+            original_writer.release()
+        
 
-        # Guardar métricas finales
-        final_metrics = model.get_current_metrics() if model else {}
-        
-        if analyze_groups and group_analyzer:
-            behavior_summary = group_analyzer.get_behavior_summary()
-            
-            # Guardar análisis de comportamiento
-            behavior_path = output_path / "group_behavior_analysis.json"
-            with open(behavior_path, 'w') as f:
-                json.dump(behavior_summary, f, indent=2)
-            
-            # Incluir resumen en métricas finales
-            final_metrics["group_behavior_summary"] = {
-                'total_events': behavior_summary.get('total_events', 0),
-                'behavior_types': behavior_summary.get('behavior_types', {}),
-                'events_count': len(behavior_summary.get('events', []))
-            }
-
-        final_metrics["original_fps"] = fps
-        final_metrics["processed_fps"] = new_fps
-        final_metrics["original_resolution"] = {"width": width, "height": height}
-        final_metrics["processed_resolution"] = {"width": new_width, "height": new_height}
-        
-        metrics_path = output_path / "metrics.json"
-        with open(metrics_path, 'w') as f:
-            json.dump(final_metrics, f)
-        
-        # Save boxes data alongside the video
-        if tecnologia == "yolo" and all_boxes:
-            boxes_path = output_path / "detection_boxes.json"
-            with open(boxes_path, 'w') as f:
-                json.dump({
-                    'model': modelo,
-                    'total_frames': total_frames,
-                    'fps': fps,
-                    'detections': all_boxes
-                }, f)
-        
-        # Convertir video final a mp4 de alta calidad
-        if output_file.exists():
-            try:
-                final_output = convert_avi_to_mp4(str(output_file), task_id)
-                relative_path = relative_path = "videos/" + task_id
-                
-                # Enviar mensaje de finalización con ruta relativa
-                if task_id in active_tasks:
-                    await manager.send_message(task_id, {
-                        "type": "complete",
-                        "output_path": relative_path,
-                        "metrics": final_metrics,
-                        "task_id": task_id
-                    })
-            except Exception as e:
-                print(f"Error en conversión final: {str(e)}")
-                await manager.send_message(task_id, {
-                    "type": "error",
-                    "message": f"Error en la conversión final: {str(e)}"
-                })
+        await finalizar_video(model, tecnologia, modelo, fps, new_fps, width, height, new_width, new_height,
+                        all_boxes, output_file, output_path, frame_count, task_id)
 
     except asyncio.CancelledError:
         print(f"Procesamiento cancelado para {task_id}")
+        if output_writer is not None:
+            output_writer.release()
+            await asyncio.sleep(0.1)  
+        if original_writer is not None:
+            original_writer.release()
+        if cap is not None:
+            cap.release()
+        await finalizar_video(model, tecnologia, modelo, fps, new_fps, width, height, new_width, new_height,
+                          all_boxes, output_file, output_path, frame_count, task_id)
         await manager.send_message(task_id, {
             "type": "cancelled",
             "message": "Proceso cancelado por el usuario"
